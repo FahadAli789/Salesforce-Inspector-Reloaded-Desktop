@@ -73,9 +73,20 @@ contextBridge.exposeInMainWorld("electronApi", {
    * Returns the refreshed SfSessionPayload | null.
    */
   refreshSession: (payload: {
-    orgId: string;
+    orgId?: string;
+    sfHost?: string;
   }): Promise<SfSessionPayload | null> =>
     ipcRenderer.invoke("auth:refresh-session", payload),
+
+  /**
+   * Validate session token validity against Salesforce APIs.
+   * Auto-refreshes if expired.
+   */
+  validateSession: (payload: {
+    orgId?: string;
+    sfHost?: string;
+  }): Promise<SfSessionPayload | null> =>
+    ipcRenderer.invoke("auth:validate-session", payload),
 
   /**
    * List all connected orgs (no secrets – tokens are never included).
@@ -109,8 +120,28 @@ contextBridge.exposeInMainWorld("electronApi", {
     ipcRenderer.invoke("auth:import-sfdx-orgs"),
 
   /**
+   * Perform an authenticated Salesforce REST request via Electron Main process.
+   * Transparently injects the bearer token and handles session auto-refresh on 401.
+   */
+  sfRestRequest: (args: {
+    sfHost: string;
+    path: string;
+    method?: string;
+    body?: any;
+    headers?: Record<string, string>;
+  }): Promise<any> => ipcRenderer.invoke("sf:rest-request", args),
+
+  /**
    * Alias for loginWithManualSession
    */
   loginManual: (payload: LoginManualPayload): Promise<OrgProfile> =>
     ipcRenderer.invoke("auth:login-manual", payload),
 });
+
+// Also alias electronAPI (capitalized) for convenience
+try {
+  contextBridge.exposeInMainWorld("electronAPI", {
+    sfRestRequest: (args: any) => ipcRenderer.invoke("sf:rest-request", args),
+  });
+} catch {}
+

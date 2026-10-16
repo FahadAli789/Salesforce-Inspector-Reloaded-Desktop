@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { EnvType, SubTabInstance } from "../state/workspace-store";
 import { getToolDefinition } from "../services/tool-registry";
+import { normalizeSfHost } from "../utils/normalize-host";
 
 export interface LegacyToolHostProps {
   orgId: string;
@@ -20,11 +21,60 @@ export const LegacyToolHost = React.memo(function LegacyToolHost({
   const definition = getToolDefinition(subTab.toolType);
   const htmlFile = definition?.htmlFile || `${subTab.toolType}.html`;
 
-  const cleanHost = useMemo(() => {
-    return (sfHost || "")
-      .replace(/^https?:\/\//i, "")
-      .replace(/\/.*$/, "");
-  }, [sfHost]);
+  const cleanHost = useMemo(() => normalizeSfHost(sfHost), [sfHost]);
+
+  // Pre-seed the session token in localStorage for cleanHost and myDomain
+  React.useEffect(() => {
+    const electronApi =
+      (window as any).electronApi || (window as any).electronAPI;
+    if (electronApi?.getSession) {
+      electronApi
+        .getSession({ orgId, sfHost: cleanHost })
+        .then((session: any) => {
+          if (session?.key) {
+            try {
+              localStorage.setItem(`${cleanHost}_access_token`, session.key);
+              const myDomain = cleanHost.replace(
+                /\.lightning\.force\./,
+                ".my.salesforce."
+              );
+              if (myDomain !== cleanHost) {
+                localStorage.setItem(`${myDomain}_access_token`, session.key);
+              }
+            } catch {}
+          }
+        })
+        .catch(() => {});
+    }
+  }, [orgId, cleanHost]);
+
+  // Handle iframe load to inject electronApi directly and trigger handshake
+  const handleIframeLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
+    try {
+      const iframeWin = (e.target as HTMLIFrameElement).contentWindow;
+      if (iframeWin) {
+        const electronApi =
+          (window as any).electronApi || (window as any).electronAPI;
+        if (electronApi) {
+          (iframeWin as any).electronApi = electronApi;
+          (iframeWin as any).electronAPI = electronApi;
+        }
+
+        // Send initialization message to the tool
+        iframeWin.postMessage(
+          {
+            insextLoaded: true,
+            insextInitResponse: true,
+            sfHost: cleanHost,
+            inDevConsole: false,
+            inLightning: true,
+            inInspector: true,
+          },
+          "*"
+        );
+      }
+    } catch {}
+  };
 
   // Construct iframe URL with query params
   const iframeSrc = useMemo(() => {
@@ -79,6 +129,7 @@ export const LegacyToolHost = React.memo(function LegacyToolHost({
       <iframe
         src={iframeSrc}
         title={subTab.title}
+        onLoad={handleIframeLoad}
         style={{
           border: "none",
           width: "100%",

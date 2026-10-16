@@ -35,6 +35,20 @@ function serveAndCopyAddonPlugin(): Plugin {
             const mimeType = mimeTypes[ext] || "application/octet-stream";
             res.setHeader("Content-Type", mimeType);
             res.setHeader("Cache-Control", "no-cache");
+
+            if (ext === ".html") {
+              let html = fs.readFileSync(filePath, "utf-8");
+              if (!html.includes("chrome-shim.js")) {
+                if (html.includes("<head>")) {
+                  html = html.replace("<head>", '<head>\n  <script src="chrome-shim.js"></script>');
+                } else {
+                  html = '<script src="chrome-shim.js"></script>\n' + html;
+                }
+              }
+              res.end(html);
+              return;
+            }
+
             fs.createReadStream(filePath).pipe(res);
             return;
           }
@@ -47,7 +61,27 @@ function serveAndCopyAddonPlugin(): Plugin {
       if (fs.existsSync(addonDir)) {
         fs.mkdirSync(outDir, { recursive: true });
         fs.cpSync(addonDir, outDir, { recursive: true });
-        console.log(`[serveAndCopyAddonPlugin] Copied addon directory to ${outDir}`);
+
+        // Ensure all HTML files in outDir include chrome-shim.js
+        try {
+          const files = fs.readdirSync(outDir);
+          for (const f of files) {
+            if (f.endsWith(".html")) {
+              const fullPath = resolve(outDir, f);
+              let content = fs.readFileSync(fullPath, "utf-8");
+              if (!content.includes("chrome-shim.js")) {
+                if (content.includes("<head>")) {
+                  content = content.replace("<head>", '<head>\n  <script src="chrome-shim.js"></script>');
+                } else {
+                  content = '<script src="chrome-shim.js"></script>\n' + content;
+                }
+                fs.writeFileSync(fullPath, content, "utf-8");
+              }
+            }
+          }
+        } catch {}
+
+        console.log(`[serveAndCopyAddonPlugin] Copied and verified addon directory at ${outDir}`);
       }
     },
   };

@@ -1,8 +1,11 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { MainOrgTab, useWorkspace } from "../state/workspace-store";
 import { SubTabBar } from "./SubTabBar";
 import { LegacyToolHost } from "./LegacyToolHost";
 import { parseInternalToolLink } from "../services/navigation-interceptor";
+import { normalizeSfHost } from "../utils/normalize-host";
+import { DevTabDashboard } from "./DevTabDashboard";
+import { PopupSearchBar } from "./PopupSearchBar";
 
 export interface OrgWorkspaceProps {
   orgTab: MainOrgTab;
@@ -10,38 +13,39 @@ export interface OrgWorkspaceProps {
 }
 
 export function OrgWorkspace({ orgTab, isActive }: OrgWorkspaceProps) {
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const popupIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const { openSubTab } = useWorkspace();
 
   const isHomeActive =
     orgTab.activeSubTabId === "HOME" || orgTab.subTabs.length === 0;
 
-  const cleanHost = (orgTab.sfHost || "")
-    .replace(/^https?:\/\//i, "")
-    .replace(/\/.*$/, "");
+  const cleanHost = useMemo(() => normalizeSfHost(orgTab.sfHost), [orgTab.sfHost]);
 
-  // Listen for messages from popup.html and tool iframes
+  // Layer 2: Proactive Startup & Tab Activation Check
+  // Validates token against Salesforce APIs on mount/wake; auto-refreshes if expired
+  useEffect(() => {
+    if (!isActive) return;
+    const electronApi = (window as any).electronApi;
+    if (electronApi?.validateSession) {
+      electronApi
+        .validateSession({ orgId: orgTab.orgId, sfHost: cleanHost })
+        .then((session: any) => {
+          if (session?.key) {
+            try {
+              localStorage.setItem(`${cleanHost}_access_token`, session.key);
+            } catch {}
+          }
+        })
+        .catch((err: any) => {
+          console.warn("[OrgWorkspace] Proactive session validation:", err);
+        });
+    }
+  }, [cleanHost, orgTab.orgId, isActive]);
+
+  // Listen for messages from tool iframes
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      // 1. Respond to popup.html's initialization request
-      if (event.data?.insextInitRequest) {
-        if (popupIframeRef.current?.contentWindow) {
-          popupIframeRef.current.contentWindow.postMessage(
-            {
-              insextLoaded: true,
-              insextInitResponse: true,
-              sfHost: cleanHost,
-              inDevConsole: false,
-              inLightning: true,
-              inInspector: true,
-            },
-            "*"
-          );
-        }
-      }
-
-      // 2. Intercept internal tool navigation (e.g. clicking Data Export, Show All Data in popup)
+      // 1. Intercept internal tool navigation (e.g. clicking Data Export, Show All Data)
       if (
         event.data?.type === "SFIR_OPEN_SUBTAB" &&
         (!event.data.orgId || event.data.orgId === orgTab.orgId)
@@ -55,7 +59,7 @@ export function OrgWorkspace({ orgTab, isActive }: OrgWorkspaceProps) {
         }
       }
 
-      // 3. Intercept lightningNavigate from popup.js
+      // 2. Intercept lightningNavigate from tools
       if (event.data?.lightningNavigate) {
         const fallbackURL =
           event.data.lightningNavigate.fallbackURL ||
@@ -76,7 +80,9 @@ export function OrgWorkspace({ orgTab, isActive }: OrgWorkspaceProps) {
     };
 
     window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
+    return () => {
+      window.removeEventListener("message", handleMessage);
+    };
   }, [cleanHost, orgTab.orgId, openSubTab]);
 
   return (
@@ -97,7 +103,7 @@ export function OrgWorkspace({ orgTab, isActive }: OrgWorkspaceProps) {
       <SubTabBar
         orgTab={orgTab}
         isSidebarOpen={isSidebarOpen}
-        onToggleSidebar={() => setIsSidebarOpen(prev => !prev)}
+        onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
       />
 
       {/* Split horizontal workspace body */}
@@ -111,73 +117,77 @@ export function OrgWorkspace({ orgTab, isActive }: OrgWorkspaceProps) {
           height: "100%",
           overflow: "hidden",
           position: "relative",
-          backgroundColor: isHomeActive ? "#090d16" : "#ffffff",
+          backgroundColor: "#ffffff",
         }}
       >
         {/* 
-          Left/Centered Popup Container:
-          In HOME mode: expands to fill workspace and centers the popup card
-          In SUB-TAB mode: docks as a left 300px side-panel
-          The <iframe> is NEVER unmounted or reloaded during mode transitions!
+          1. Dedicated Native Dev Tab Dashboard (HOME mode):
+          Renders the native React dashboard with Smart Popup Search Bar,
+          15/18-char ID resolver, tools grid, and setup shortcuts.
         */}
-        <div
-          className="org-popup-container"
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: isHomeActive ? "center" : "stretch",
-            justifyContent: isHomeActive ? "center" : "flex-start",
-            width: isHomeActive ? "100%" : isSidebarOpen ? 300 : 0,
-            minWidth: isHomeActive ? "100%" : isSidebarOpen ? 300 : 0,
-            height: "100%",
-            backgroundColor: isHomeActive ? "#090d16" : "#ffffff",
-            borderRight:
-              !isHomeActive && isSidebarOpen ? "1px solid #1e293b" : "none",
-            transition: "width 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
-            overflow: "hidden",
-            position: "relative",
-            zIndex: 10,
-          }}
-        >
-          <div
-            className="popup-frame-wrapper"
-            style={{
-              width: isHomeActive ? 380 : 300,
-              maxWidth: "100%",
-              height: isHomeActive ? "92%" : "100%",
-              maxHeight: isHomeActive ? 720 : "none",
-              borderRadius: isHomeActive ? 12 : 0,
-              boxShadow: isHomeActive
-                ? "0 20px 48px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.08)"
-                : "none",
-              overflow: "hidden",
-              display: "flex",
-              flexDirection: "column",
-              backgroundColor: "#ffffff",
-              transition:
-                "width 0.2s ease, border-radius 0.2s ease, box-shadow 0.2s ease",
-            }}
-          >
-            <iframe
-              ref={popupIframeRef}
-              src={`/addon/popup.html?host=${encodeURIComponent(
-                cleanHost
-              )}&orgId=${encodeURIComponent(orgTab.orgId)}`}
-              title="Salesforce Inspector Popup"
-              style={{
-                width: "100%",
-                height: "100%",
-                border: "none",
-                backgroundColor: "#ffffff",
-              }}
-            />
-          </div>
-        </div>
+        {isHomeActive && (
+          <DevTabDashboard orgTab={orgTab} />
+        )}
 
         {/* 
-          Right Sub-Tab Viewport:
-          Hidden when HOME is active; visible when working inside subtabs
-          All subtabs remain mounted persistently
+          2. Compact Quick Search Sidebar (SUB-TAB mode):
+          Allows quick lookup without leaving the active subtab when toggled.
+        */}
+        {!isHomeActive && isSidebarOpen && (
+          <div
+            className="org-popup-sidebar"
+            style={{
+              width: 320,
+              minWidth: 320,
+              height: "100%",
+              backgroundColor: "#ffffff",
+              borderRight: "1px solid #e2e8f0",
+              display: "flex",
+              flexDirection: "column",
+              padding: "16px",
+              overflowY: "auto",
+              boxShadow: "2px 0 8px rgba(0,0,0,0.03)",
+              zIndex: 10,
+            }}
+          >
+            <div
+              style={{
+                marginBottom: 12,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#1e293b" }}>
+                Quick Search & ID Resolver
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsSidebarOpen(false)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  color: "#64748b",
+                  fontSize: 14,
+                }}
+                title="Collapse sidebar"
+              >
+                ✕
+              </button>
+            </div>
+            <PopupSearchBar
+              orgId={orgTab.orgId}
+              sfHost={cleanHost}
+              autoFocus={false}
+            />
+          </div>
+        )}
+
+        {/* 
+          3. Sub-Tab Viewport:
+          Hidden when HOME is active; visible when working inside subtabs.
+          All subtabs remain mounted persistently.
         */}
         <div
           className="org-subtab-viewport"
@@ -191,7 +201,7 @@ export function OrgWorkspace({ orgTab, isActive }: OrgWorkspaceProps) {
             position: "relative",
           }}
         >
-          {orgTab.subTabs.map(subTab => (
+          {orgTab.subTabs.map((subTab) => (
             <LegacyToolHost
               key={subTab.subTabId}
               orgId={orgTab.orgId}

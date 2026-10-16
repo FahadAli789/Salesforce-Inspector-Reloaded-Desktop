@@ -27,12 +27,15 @@ import type { OrgProfile, VaultRecord, SfSessionPayload } from "../../shared/typ
  * e.g. "https://my-org.sandbox.my.salesforce.com/" -> "my-org.sandbox.my.salesforce.com"
  */
 export function normalizeSfHost(urlOrHost: string): string {
-  if (!urlOrHost) return "";
-  let host = urlOrHost.trim();
-  host = host.replace(/^https?:\/\//i, "");
-  host = host.replace(/\/.*$/, "");
-  host = host.replace(/[?#].*$/, "");
-  return host.trim();
+  if (!urlOrHost || typeof urlOrHost !== "string") return "";
+  try {
+    const withProtocol = urlOrHost.startsWith("http")
+      ? urlOrHost
+      : `https://${urlOrHost}`;
+    return new URL(withProtocol).hostname;
+  } catch {
+    return urlOrHost.replace(/^https?:\/\//i, "").replace(/\/.*$/, "").trim();
+  }
 }
 
 function vaultPath(): string {

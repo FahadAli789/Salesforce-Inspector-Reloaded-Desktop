@@ -14,13 +14,19 @@
 
 import { BrowserWindow, net } from "electron";
 import * as crypto from "crypto";
-import type { EnvType, OrgProfile } from "../../shared/types/org";
+import { exec } from "child_process";
+import { promisify } from "util";
+import type { EnvType, OrgProfile, SfSessionPayload } from "../../shared/types/org";
 import {
   saveOrgSession,
   getRefreshToken,
   getVaultRecord,
+  getOrgSession,
+  getOrgSessionByHost,
   normalizeSfHost,
 } from "./session-vault";
+
+const execAsync = promisify(exec);
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -138,6 +144,9 @@ export async function loginWithOAuth(
   const challenge = generateCodeChallenge(verifier);
 
   // Build the authorisation URL
+  // NOTE: Do NOT set 'scope' (e.g. 'openid' or 'web'). Omitting 'scope' allows
+  // Salesforce to automatically assign all scopes configured on the Connected App
+  // (including refresh_token and api) without throwing OAUTH_APPROVAL_ERROR_GENERIC.
   const authUrl = new URL(`${loginUrl}/services/oauth2/authorize`);
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("client_id", clientId);
@@ -252,7 +261,7 @@ export async function loginWithOAuth(
   return { profile };
 }
 
-// ── Token refresh ────────────────────────────────────────────────────────────
+// ── Token refresh & Self-Healing ──────────────────────────────────────────────
 
 export async function refreshAccessToken(orgId: string): Promise<string> {
   const record = getVaultRecord(orgId);
@@ -260,37 +269,161 @@ export async function refreshAccessToken(orgId: string): Promise<string> {
     throw new Error(`No vault record found for orgId: ${orgId}`);
   }
 
+  // Strategy A: OAuth 2.0 refresh_token flow
   const refreshToken = getRefreshToken(orgId);
-  if (!refreshToken) {
-    throw new Error(`No refresh token stored for orgId: ${orgId}`);
+  if (refreshToken) {
+    try {
+      const tokenResponse = await httpPost(
+        `${record.loginUrl}/services/oauth2/token`,
+        {
+          grant_type: "refresh_token",
+          client_id: DEFAULT_CLIENT_ID,
+          refresh_token: refreshToken,
+        }
+      );
+
+      const newAccessToken = tokenResponse.access_token as string;
+      if (newAccessToken) {
+        const updatedProfile: OrgProfile = {
+          orgId: record.orgId,
+          alias: record.alias,
+          sfHost: normalizeSfHost(record.sfHost),
+          loginUrl: record.loginUrl,
+          username: record.username,
+          orgType: record.orgType,
+          color: record.color,
+          isConnected: true,
+        };
+
+        saveOrgSession(updatedProfile, newAccessToken, refreshToken);
+        return newAccessToken;
+      }
+    } catch (oauthErr) {
+      console.warn(
+        `[refreshAccessToken] Strategy A (OAuth refresh) failed for ${record.alias || orgId}:`,
+        oauthErr
+      );
+    }
   }
 
-  const tokenResponse = await httpPost(
-    `${record.loginUrl}/services/oauth2/token`,
-    {
-      grant_type: "refresh_token",
-      client_id: DEFAULT_CLIENT_ID,
-      refresh_token: refreshToken,
+  // Strategy B: SFDX / SF CLI Re-Sync
+  const targetOrg = record.username || record.alias || record.sfHost;
+  if (targetOrg) {
+    try {
+      const cliToken = await refreshViaCli(targetOrg);
+      if (cliToken) {
+        const updatedProfile: OrgProfile = {
+          orgId: record.orgId,
+          alias: record.alias,
+          sfHost: normalizeSfHost(record.sfHost),
+          loginUrl: record.loginUrl,
+          username: record.username,
+          orgType: record.orgType,
+          color: record.color,
+          isConnected: true,
+        };
+        saveOrgSession(updatedProfile, cliToken, refreshToken || "");
+        return cliToken;
+      }
+    } catch (cliErr) {
+      console.warn(
+        `[refreshAccessToken] Strategy B (CLI sync) failed for ${targetOrg}:`,
+        cliErr
+      );
     }
+  }
+
+  throw new Error(
+    `Session refresh failed for ${record.alias || orgId}. Please re-authenticate.`
   );
+}
 
-  const newAccessToken = tokenResponse.access_token as string;
+async function refreshViaCli(targetOrg: string): Promise<string | null> {
+  const commands = [
+    `sf org display --target-org "${targetOrg}" --json`,
+    `sf org auth show-access-token --target-org "${targetOrg}" --json`,
+    `sfdx force:org:display --targetusername "${targetOrg}" --json`,
+  ];
 
-  // Re-save with the new access token (refresh token is typically unchanged)
-  const updatedProfile: OrgProfile = {
-    orgId: record.orgId,
-    alias: record.alias,
-    sfHost: record.sfHost,
-    loginUrl: record.loginUrl,
-    username: record.username,
-    orgType: record.orgType,
-    color: record.color,
-    isConnected: true,
+  const env = {
+    ...process.env,
+    PATH:
+      process.env.PATH || "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/usr/sbin:/sbin",
   };
 
-  saveOrgSession(updatedProfile, newAccessToken, refreshToken);
+  for (const cmd of commands) {
+    try {
+      const { stdout } = await execAsync(cmd, { timeout: 15000, env });
+      const parsed = JSON.parse(stdout);
+      if (parsed && (parsed.status === 0 || parsed.result)) {
+        const token =
+          parsed.result?.accessToken ||
+          parsed.result?.access_token ||
+          parsed.result?.token;
+        if (token && typeof token === "string" && !token.includes("[REDACTED]")) {
+          return token;
+        }
+      }
+    } catch {
+      // Continue to next command
+    }
+  }
+  return null;
+}
 
-  return newAccessToken;
+export async function validateSession(orgId: string): Promise<boolean> {
+  const session = getOrgSession(orgId);
+  if (!session || !session.key) return false;
+
+  const sfHost = normalizeSfHost(session.hostname);
+  const instanceUrl = `https://${sfHost}`;
+
+  try {
+    const probeResponse = await httpGet(
+      `${instanceUrl}/services/oauth2/userinfo`,
+      session.key
+    );
+    if (
+      probeResponse &&
+      (probeResponse.organization_id || probeResponse.user_id || probeResponse.sub)
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export async function getValidSession(
+  payload: { orgId?: string; sfHost?: string },
+  forceRefresh = false
+): Promise<SfSessionPayload | null> {
+  let record = payload.orgId ? getVaultRecord(payload.orgId) : null;
+  if (!record && payload.sfHost) {
+    const target = normalizeSfHost(payload.sfHost);
+    const session = getOrgSessionByHost(target);
+    if (session?.orgId) {
+      record = getVaultRecord(session.orgId);
+    }
+  }
+  if (!record) return null;
+
+  if (!forceRefresh) {
+    const isValid = await validateSession(record.orgId);
+    if (isValid) {
+      return getOrgSession(record.orgId);
+    }
+  }
+
+  // Token is expired or forceRefresh requested: trigger self-healing auto-refresh
+  try {
+    await refreshAccessToken(record.orgId);
+    return getOrgSession(record.orgId);
+  } catch (err) {
+    console.warn(`[getValidSession] Auto-refresh failed for ${record.alias}:`, err);
+    return getOrgSession(record.orgId);
+  }
 }
 
 // ── Manual session import ────────────────────────────────────────────────────

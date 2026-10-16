@@ -54,17 +54,30 @@ body {
   background-color: var(--sfir-white);
   margin: 0;
   height: 100%;
+  width: 100%;
 }
 
 body {
   font-size: var(--sfir-font-md);
+  overflow-x: hidden;
 }
 
 #root,
 [data-reactroot] {
   height: 100%;
+  width: 100%;
   display: flex;
   flex-direction: column;
+}
+
+#root > div {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
 }
 
 a,
@@ -75,8 +88,10 @@ a > span {
 }
 
 .main {
-  flex: 1;
-  overflow-y: scroll;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .header-light {
@@ -505,32 +520,35 @@ a.icon-url {
 
 /* MAIN TABS*/
 #mainTabs .slds-tabs_scoped__nav {
-  position: fixed !important;
+  position: sticky !important;
+  top: 0 !important;
   z-index: var(--sfir-z-tabs) !important;
   width: 100%;
+  background-color: var(--sfir-white);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 #mainTabs .slds-tabs_scoped__link {
-  line-height: 2rem !important;
+  line-height: 2.25rem !important;
   padding-block: 0;
-  padding-inline: 0.75rem;
+  padding-inline: 0.85rem;
   height: auto;
-  border-bottom: none !important;
+  border-bottom: 2px solid transparent !important;
   font-weight: 600;
   font-size: var(--sfir-font-lg);
 }
 
 #mainTabs .slds-tabs_scoped__item.slds-is-active .slds-tabs_scoped__link {
   color: var(--sfir-blue-color) !important;
-  border-bottom: none !important;
+  border-bottom: 2px solid var(--sfir-blue-color) !important;
 }
 /* end of MAIN TABS*/
 
 /* TAB CONTAINER */
 .tab-container {
   position: relative;
-  padding-top: 40px;
   width: 100%;
+  box-sizing: border-box;
 }
 /* end of TAB CONTAINER */
 
@@ -620,3 +638,131 @@ a.icon-url {
 a:hover:has(.sfir-copy-userid-icon:hover) {
   text-decoration: none;
 }
+
+/* ==========================================================================
+   Responsive Desktop Dashboard Layout Overrides (Tranche 2)
+   ========================================================================== */
+
+@media (min-width: 520px) {
+  .popup-header.slds-page-header {
+    padding: 0.85rem 1.75rem !important;
+    background: linear-gradient(to right, #f8fafc, #edf2f7) !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+  }
+
+  .popup-header__title.popup-title {
+    font-size: 1.25rem !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.01em;
+    padding-left: 0 !important;
+    text-align: left !important;
+  }
+
+  #mainTabs .slds-tabs_scoped__nav {
+    padding: 0 1.5rem;
+    background-color: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  #mainTabs .slds-tabs_scoped__link {
+    font-size: 13px !important;
+    padding-inline: 1.25rem !important;
+    line-height: 2.5rem !important;
+  }
+
+  .tab-container {
+    padding: 1.25rem 1.75rem;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  /* Grid layout for Data & Metadata, Platform Tools, and Management button groups */
+  #mainTabs .slds-grid.slds-wrap.slds-p-vertical_x-small {
+    padding: 1.25rem 1.75rem !important;
+    max-width: 1400px;
+    margin: 0 auto;
+    display: grid !important;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)) !important;
+    gap: 0.75rem !important;
+  }
+
+  #mainTabs .slds-grid.slds-wrap.slds-p-vertical_x-small > p {
+    grid-column: 1 / -1 !important;
+    margin-top: 0.5rem !important;
+    margin-bottom: 0.25rem !important;
+    padding-left: 0 !important;
+    font-size: 0.825rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.05em !important;
+    color: #475569 !important;
+    font-weight: 700 !important;
+  }
+
+  #mainTabs .slds-grid.slds-wrap.slds-p-vertical_x-small > div {
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  #mainTabs .page-button {
+    height: 40px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border-radius: 6px !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    background-color: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
+    transition: all 0.15s ease-in-out !important;
+  }
+
+  #mainTabs .page-button:hover {
+    background-color: #f1f5f9 !important;
+    border-color: #94a3b8 !important;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.08) !important;
+    transform: translateY(-1px) !important;
+  }
+
+  .all-data-input {
+    font-size: 14px !important;
+    line-height: 2.35rem !important;
+    border-radius: 6px !important;
+  }
+
+  .autocomplete {
+    max-height: 440px !important;
+    border-radius: 8px !important;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.12), 0 8px 10px -6px rgba(0, 0, 0, 0.06) !important;
+  }
+
+  .autocomplete-item {
+    padding: 0.5rem 0.75rem !important;
+  }
+
+  .all-data-box-inner {
+    min-height: 14em;
+  }
+
+  .all-data-box-data table {
+    font-size: 13px !important;
+  }
+
+  .all-data-box-data th {
+    width: 18% !important;
+    font-weight: 600 !important;
+    color: var(--sfir-text-secondary) !important;
+  }
+
+  /* Desktop Footer */
+  .slds-grid.slds-grid_vertical-align-center.slds-theme_shade {
+    padding-inline: 1.75rem !important;
+    padding-block: 0.6rem !important;
+  }
+
+  .footer-small-text {
+    font-size: 12.5px !important;
+  }
+}
+

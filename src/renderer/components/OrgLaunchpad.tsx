@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { useWorkspace, ToolType } from "../state/workspace-store";
 import { OrgProfile, EnvType } from "../../shared/types/org";
+import { normalizeSfHost } from "../utils/normalize-host";
 
 const ENV_COLORS: Record<EnvType, { bg: string; text: string }> = {
   PROD: { bg: "#dc2626", text: "#ffffff" },
@@ -128,10 +129,7 @@ export function OrgLaunchpad() {
       return;
     }
 
-    const cleanHost = manualHost
-      .trim()
-      .replace(/^https?:\/\//i, "")
-      .replace(/\/.*$/, "");
+    const cleanHost = normalizeSfHost(manualHost);
 
     if (!cleanHost) {
       setErrorMsg("Please enter a valid instance hostname");

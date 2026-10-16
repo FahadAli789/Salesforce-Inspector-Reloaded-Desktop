@@ -21,6 +21,8 @@ import {
   loginWithOAuth,
   loginWithManualSession,
   refreshAccessToken,
+  getValidSession,
+  validateSession,
   type LoginWithOAuthOptions,
   type ManualSessionOptions,
 } from "../auth/oauth-service";
@@ -65,18 +67,27 @@ export function registerAuthHandlers(): void {
   );
 
   // ── auth:get-session ───────────────────────────────────────────────────────
-  // Accepts { orgId?, sfHost? }. Looks up by orgId first; falls back to normalized sfHost.
+  // Accepts { orgId?, sfHost? }. Validates session token and auto-refreshes if expired.
   // ALWAYS returns { key: sessionId, hostname: normalizeSfHost(hostname) }.
   ipcMain.handle(
     "auth:get-session",
     async (_event, payload: GetSessionPayload): Promise<SfSessionPayload | null> => {
-      let session: SfSessionPayload | null = null;
-      if (payload.orgId) {
-        session = getOrgSession(payload.orgId);
+      const session = await getValidSession(payload);
+      if (session) {
+        return {
+          ...session,
+          hostname: normalizeSfHost(session.hostname),
+        };
       }
-      if (!session && payload.sfHost) {
-        session = getOrgSessionByHost(normalizeSfHost(payload.sfHost));
-      }
+      return null;
+    }
+  );
+
+  // ── auth:validate-session ──────────────────────────────────────────────────
+  ipcMain.handle(
+    "auth:validate-session",
+    async (_event, payload: { orgId?: string; sfHost?: string }): Promise<SfSessionPayload | null> => {
+      const session = await getValidSession(payload, false);
       if (session) {
         return {
           ...session,
@@ -90,10 +101,18 @@ export function registerAuthHandlers(): void {
   // ── auth:refresh-session ───────────────────────────────────────────────────
   ipcMain.handle(
     "auth:refresh-session",
-    async (_event, { orgId }: { orgId: string }): Promise<SfSessionPayload | null> => {
-      await refreshAccessToken(orgId);
-      // Return the fresh session payload
-      return getOrgSession(orgId);
+    async (
+      _event,
+      payload: { orgId?: string; sfHost?: string }
+    ): Promise<SfSessionPayload | null> => {
+      const session = await getValidSession(payload, true);
+      if (session) {
+        return {
+          ...session,
+          hostname: normalizeSfHost(session.hostname),
+        };
+      }
+      return null;
     }
   );
 
@@ -217,4 +236,90 @@ export function registerAuthHandlers(): void {
 
     return listOrgProfiles();
   });
+
+  // ── sf:rest-request ────────────────────────────────────────────────────────
+  ipcMain.handle(
+    "sf:rest-request",
+    async (
+      _event,
+      args: {
+        sfHost: string;
+        path: string;
+        method?: string;
+        body?: any;
+        headers?: Record<string, string>;
+      }
+    ): Promise<any> => {
+      const { sfHost, path: reqPath, method = "GET", body, headers = {} } = args;
+      if (!sfHost) {
+        throw new Error("Missing sfHost in sf:rest-request");
+      }
+
+      let session = await getValidSession({ sfHost }, false);
+      if (!session || !session.key) {
+        throw new Error(`No valid session found for host: ${sfHost}`);
+      }
+
+      const bareHost = normalizeSfHost(session.hostname || sfHost);
+      const cleanPath = reqPath.startsWith("/") ? reqPath : `/${reqPath}`;
+      const url = `https://${bareHost}${cleanPath}`;
+
+      const makeRequest = async (token: string) => {
+        const reqHeaders: Record<string, string> = {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          ...headers,
+        };
+
+        const fetchInit: RequestInit = {
+          method: method.toUpperCase(),
+          headers: reqHeaders,
+        };
+
+        if (
+          body &&
+          (fetchInit.method === "POST" ||
+            fetchInit.method === "PATCH" ||
+            fetchInit.method === "PUT")
+        ) {
+          fetchInit.body = typeof body === "string" ? body : JSON.stringify(body);
+        }
+
+        return await fetch(url, fetchInit);
+      };
+
+      let response = await makeRequest(session.key);
+
+      // If 401 Unauthorized, refresh the session once and retry
+      if (response.status === 401) {
+        console.warn(
+          `[sf:rest-request] 401 received for ${bareHost}${cleanPath}, refreshing session...`
+        );
+        const refreshed = await getValidSession({ sfHost }, true);
+        if (refreshed && refreshed.key) {
+          response = await makeRequest(refreshed.key);
+        }
+      }
+
+      if (!response.ok) {
+        let errMessage = `Salesforce REST error: HTTP ${response.status} ${response.statusText}`;
+        try {
+          const errJson = await response.json();
+          if (Array.isArray(errJson) && errJson[0]?.message) {
+            errMessage = errJson[0].message;
+          } else if (errJson?.message) {
+            errMessage = errJson.message;
+          }
+        } catch {}
+        throw new Error(errMessage);
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        return await response.json();
+      }
+      return await response.text();
+    }
+  );
 }

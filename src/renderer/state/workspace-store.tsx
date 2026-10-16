@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback, ReactNode } from "react";
 import { OrgProfile, EnvType } from "../../shared/types/org";
+import { normalizeSfHost } from "../utils/normalize-host";
 import { ToolType, toolDefinitions } from "../services/tool-registry";
 import { destroyOrgScopedInspector } from "@addon/inspector.js";
 
@@ -124,10 +125,11 @@ function workspaceReducer(state: WorkspaceState, action: WorkspaceAction): Works
       const initialSubTabs = initialTool ? [createDefaultSubTab(initialTool)] : [];
       const initialActiveId = initialSubTabs[0]?.subTabId || "HOME";
 
+      const normalizedHost = normalizeSfHost(org.sfHost);
       const newMainTab: MainOrgTab = {
         orgId: org.orgId,
-        alias: org.alias || org.sfHost,
-        sfHost: org.sfHost,
+        alias: org.alias || normalizedHost,
+        sfHost: normalizedHost,
         username: org.username,
         envType: org.orgType,
         color: org.color || "#2563eb",

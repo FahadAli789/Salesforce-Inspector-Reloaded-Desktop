@@ -369,9 +369,14 @@ const sfConnPrototype = {
       // window object via the preload contextBridge.  Pass both orgId (for
       // vault lookup by key) and sfHost (fallback lookup) so the main process
       // can find the right session regardless of which was stored first.
-      if (window.electronApi?.getSession) {
-        const res = await window.electronApi.getSession({
-          orgId: this.orgId,   // may be undefined on the legacy singleton
+      const api =
+        window.electronApi ||
+        (window.parent && window.parent.electronApi) ||
+        (window.top && window.top.electronApi);
+      if (api?.getSession) {
+        const urlParams = new URLSearchParams(window.location.search || "");
+        const res = await api.getSession({
+          orgId: this.orgId || urlParams.get("orgId") || undefined,
           sfHost,
         });
         if (res) {
@@ -690,6 +695,9 @@ const sfConnPrototype = {
 // call sfConn.getSession / sfConn.rest etc. continue to work unchanged because
 // this singleton is an instance of sfConnPrototype.
 export let sfConn = Object.create(sfConnPrototype);
+if (typeof window !== "undefined") {
+  window.sfConn = sfConn;
+}
 
 export class XML {
   static stringify({name, attributes, value}) {

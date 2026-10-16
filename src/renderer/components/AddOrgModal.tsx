@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { OrgProfile, EnvType } from "../../shared/types/org";
+import { normalizeSfHost } from "../utils/normalize-host";
 
 interface AddOrgModalProps {
   isOpen: boolean;
@@ -61,8 +62,7 @@ export function AddOrgModal({ isOpen, onClose, onOrgConnected }: AddOrgModalProp
     }
     setBusy(true);
     setError(null);
-    try {
-      const cleanHost = sfHost.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+      const cleanHost = normalizeSfHost(sfHost);
       const org = await electronApi.loginWithManualSession({
         alias: manualAlias,
         sfHost: cleanHost,
