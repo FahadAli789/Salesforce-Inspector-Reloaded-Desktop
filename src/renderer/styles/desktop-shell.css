@@ -1,0 +1,117 @@
+/* ── Salesforce Inspector Reloaded Desktop Shell Design System ─────────── */
+
+:root {
+  --bg-app: #090d16;
+  --bg-header: #0f172a;
+  --bg-panel: #0d121f;
+  --bg-card: #131b2e;
+  --bg-card-hover: #18223a;
+  --bg-input: #090f1d;
+  --border-subtle: #1e293b;
+  --border-strong: #2e3d5b;
+  --border-focus: #3b82f6;
+
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+  --text-subtle: #64748b;
+
+  --env-prod: #dc2626;
+  --env-uat: #d97706;
+  --env-sit: #7c3aed;
+  --env-dev: #2563eb;
+  --env-sandbox: #d97706;
+
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --purple: #8b5cf6;
+}
+
+html, body, #root, #app-root {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* ── Window Titlebar Drag Regions ────────────────────────────────────────── */
+.app-drag-region {
+  -webkit-app-region: drag;
+}
+
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* macOS traffic lights spacer */
+.mac-traffic-lights-spacer {
+  width: 78px;
+  height: 100%;
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+}
+
+/* ── Environment Badges ─────────────────────────────────────────────────── */
+.env-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #ffffff;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.env-badge-PROD {
+  background-color: var(--env-prod);
+}
+
+.env-badge-UAT {
+  background-color: var(--env-uat);
+}
+
+.env-badge-SIT {
+  background-color: var(--env-sit);
+}
+
+.env-badge-DEV {
+  background-color: var(--env-dev);
+}
+
+.env-badge-SANDBOX {
+  background-color: var(--env-sandbox);
+}
+
+/* ── Scrollbars ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}

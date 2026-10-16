@@ -1,8 +1,12 @@
 import {getRedirectUri, getClientId, isSettingEnabled, Constants} from "./utils.js";
 import {apiStatistics} from "./api-statistics.js";
+import {DescribeInfo as DefaultDescribeInfo} from "./data-load.js";
 
 export let defaultApiVersion = "67.0";
 export let apiVersion = localStorage.getItem("apiVersion") == null ? defaultApiVersion : localStorage.getItem("apiVersion");
+export { DefaultDescribeInfo as DescribeInfo };
+export const h = (...args) => (window.React ? window.React.createElement(...args) : null);
+export const initButton = () => {};
 
 export let sessionError;
 const clientId = "Salesforce Inspector Reloaded";
@@ -13,7 +17,302 @@ function getCallOptionsClientId() {
   return isSettingEnabled(Constants.QA_INTERNAL_MODE) ? qaInternalClientIdPrefix + clientId : clientId;
 }
 
-export let sfConn = {
+// ── Electron window.chrome polyfill & link navigation bridge ──────────────────
+const _electronApi =
+  window.electronApi ||
+  (window.parent && window.parent.electronApi) ||
+  (window.top && window.top.electronApi);
+const _urlParams = new URLSearchParams(window.location.search.slice(1));
+const _currentOrgId = _urlParams.get("orgId") || "";
+const _currentSfHost = (_urlParams.get("host") || "")
+  .replace(/^https?:\/\//i, "")
+  .replace(/\/.*$/, "");
+
+if (!window.chrome || !window.chrome.runtime || !window.chrome.runtime.sendMessage) {
+  window.chrome = window.chrome || {};
+  window.chrome.i18n = { getMessage: (k) => k };
+  window.chrome.storage = {
+    local: {
+      get: (keys, cb) => {
+        const res = {};
+        const list = Array.isArray(keys)
+          ? keys
+          : typeof keys === "string"
+          ? [keys]
+          : Object.keys(keys || {});
+        list.forEach((k) => {
+          const raw = localStorage.getItem(k);
+          if (raw !== null) {
+            try {
+              res[k] = JSON.parse(raw);
+            } catch {
+              res[k] = raw;
+            }
+          } else if (
+            typeof keys === "object" &&
+            !Array.isArray(keys) &&
+            keys !== null
+          ) {
+            res[k] = keys[k];
+          }
+        });
+        if (cb) cb(res);
+        return Promise.resolve(res);
+      },
+      set: (items, cb) => {
+        Object.entries(items || {}).forEach(([k, v]) =>
+          localStorage.setItem(k, JSON.stringify(v))
+        );
+        if (cb) cb();
+        return Promise.resolve();
+      },
+    },
+  };
+  window.chrome.runtime = {
+    getManifest: () => ({ version_name: "2.1.0", version: "2.1.0" }),
+    onMessage: { addListener: () => {}, removeListener: () => {} },
+    getURL: (path) => `/addon/${path.replace(/^\//, "")}`,
+    sendMessage: (msg, cb) => {
+      if (msg && msg.message === "getSession") {
+        const cleanHost = (msg.sfHost || _currentSfHost)
+          .replace(/^https?:\/\//i, "")
+          .replace(/\/.*$/, "");
+        if (_electronApi && _electronApi.getSession) {
+          _electronApi
+            .getSession({ orgId: _currentOrgId, sfHost: cleanHost })
+            .then((session) => {
+              const payload = session
+                ? {
+                    key: session.key,
+                    hostname: (session.hostname || cleanHost)
+                      .replace(/^https?:\/\//i, "")
+                      .replace(/\/.*$/, ""),
+                  }
+                : null;
+              if (cb) cb(payload);
+            })
+            .catch(() => {
+              if (cb) cb(null);
+            });
+          return;
+        }
+      }
+      if (msg && msg.message === "getSfHost") {
+        if (cb) cb(_currentSfHost);
+        return;
+      }
+      if (cb) cb(null);
+    },
+  };
+}
+
+// Global click & auxclick delegation for internal tabs and external Salesforce links
+function _handleGlobalLinkClick(e) {
+  const path = e.composedPath ? e.composedPath() : [];
+  let anchor = null;
+  for (const el of path) {
+    if (el && el.tagName && el.tagName.toLowerCase() === "a") {
+      anchor = el;
+      break;
+    }
+  }
+  if (!anchor && e.target) {
+    anchor = e.target.closest ? e.target.closest("a") : null;
+  }
+  if (!anchor) return;
+
+  const rawHref = anchor.getAttribute("href") || anchor.href;
+  if (!rawHref || rawHref === "#" || rawHref.startsWith("javascript:")) return;
+
+  const internalPages = [
+    "data-export.html",
+    "data-import.html",
+    "inspect.html",
+    "limits.html",
+    "explore-api.html",
+    "event-monitor.html",
+    "field-creator.html",
+    "field-manager.html",
+    "options.html",
+    "popup.html",
+    "rest-explore.html",
+    "metadata-retrieve.html",
+    "flow-scanner.html",
+    "dependencies-explorer.html",
+  ];
+
+  const lowerHref = rawHref.toLowerCase();
+  const isInternal = internalPages.some((p) => lowerHref.includes(p));
+
+  if (isInternal) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (window.top) {
+      window.top.postMessage(
+        {
+          type: "SFIR_OPEN_SUBTAB",
+          orgId: _currentOrgId,
+          sfHost: _currentSfHost,
+          href: rawHref,
+        },
+        "*"
+      );
+    }
+    return;
+  }
+
+  // Intercept Salesforce links (relative paths or Salesforce domains)
+  const isSalesforceRelative =
+    rawHref.startsWith("/servlet/servlet.su") ||
+    rawHref.startsWith("/lightning/") ||
+    rawHref.startsWith("/secur/") ||
+    rawHref.startsWith("/apex/") ||
+    rawHref.startsWith("/_ui/");
+
+  const isSalesforceAbsolute =
+    anchor.href &&
+    (anchor.href.includes(".salesforce.com") ||
+      anchor.href.includes(".force.com") ||
+      anchor.href.includes(".cloudforce.com"));
+
+  if (isSalesforceRelative || isSalesforceAbsolute) {
+    try {
+      let retUrl = rawHref;
+      if (isSalesforceAbsolute) {
+        const parsedUrl = new URL(anchor.href);
+        const host = parsedUrl.hostname.toLowerCase();
+        const isSalesforceApp =
+          (host.endsWith(".salesforce.com") ||
+            host.endsWith(".force.com") ||
+            host.endsWith(".cloudforce.com")) &&
+          !host.startsWith("help.") &&
+          !host.startsWith("developer.") &&
+          !host.startsWith("trailhead.");
+
+        if (isSalesforceApp) {
+          retUrl = parsedUrl.pathname + parsedUrl.search + parsedUrl.hash;
+        } else {
+          if (_electronApi && _electronApi.openExternal) {
+            e.preventDefault();
+            e.stopPropagation();
+            _electronApi.openExternal(anchor.href);
+            return;
+          }
+        }
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+      if (_electronApi && _electronApi.openOrgFrontdoor) {
+        _electronApi.openOrgFrontdoor(_currentOrgId, retUrl);
+      } else if (_electronApi && _electronApi.openExternal) {
+        _electronApi.openExternal(`https://${_currentSfHost}${retUrl}`);
+      } else {
+        window.open(`https://${_currentSfHost}${retUrl}`, "_blank");
+      }
+      return;
+    } catch {
+      // Fall through
+    }
+  }
+
+  if (
+    anchor.href &&
+    (anchor.href.startsWith("http://") || anchor.href.startsWith("https://"))
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (_electronApi && _electronApi.openExternal) {
+      _electronApi.openExternal(anchor.href);
+    } else {
+      window.open(anchor.href, "_blank");
+    }
+  }
+}
+
+window.addEventListener("click", _handleGlobalLinkClick, true);
+window.addEventListener("auxclick", _handleGlobalLinkClick, true);
+
+// Wrap window.open to intercept script-driven tool and frontdoor navigation
+const _origWindowOpen = window.open;
+window.open = function (url, target, features) {
+  if (url && typeof url === "string") {
+    // 1. Check if internal inspector tool
+    const internalPages = [
+      "data-export.html",
+      "data-import.html",
+      "inspect.html",
+      "limits.html",
+      "explore-api.html",
+      "event-monitor.html",
+      "field-creator.html",
+      "field-manager.html",
+      "options.html",
+    ];
+    if (internalPages.some((p) => url.toLowerCase().includes(p))) {
+      if (window.top) {
+        window.top.postMessage(
+          {
+            type: "SFIR_OPEN_SUBTAB",
+            orgId: _currentOrgId,
+            sfHost: _currentSfHost,
+            href: url,
+          },
+          "*"
+        );
+      }
+      return null;
+    }
+
+    // 2. Check if Salesforce link
+    const isRelative =
+      url.startsWith("/servlet/servlet.su") ||
+      url.startsWith("/lightning/") ||
+      url.startsWith("/secur/") ||
+      url.startsWith("/apex/") ||
+      url.startsWith("/_ui/");
+
+    const isAbsolute =
+      url.includes(".salesforce.com") ||
+      url.includes(".force.com") ||
+      url.includes(".cloudforce.com");
+
+    if (isRelative || isAbsolute) {
+      let retUrl = url;
+      if (isAbsolute) {
+        try {
+          const parsed = new URL(url);
+          retUrl = parsed.pathname + parsed.search + parsed.hash;
+        } catch {}
+      }
+      if (_electronApi && _electronApi.openOrgFrontdoor) {
+        _electronApi.openOrgFrontdoor(_currentOrgId, retUrl);
+        return null;
+      }
+    }
+
+    if (
+      _electronApi &&
+      _electronApi.openExternal &&
+      (url.startsWith("http://") || url.startsWith("https://"))
+    ) {
+      _electronApi.openExternal(url);
+      return null;
+    }
+  }
+  return _origWindowOpen ? _origWindowOpen.call(window, url, target, features) : null;
+};
+
+// ── sfConnPrototype ────────────────────────────────────────────────────────────
+//
+// All sfConn behaviour lives here.  Per-org instances are created via
+// Object.create(sfConnPrototype) in createOrgScopedInspector so they carry
+// their own orgId / instanceHostname / sessionId without any shared state.
+//
+// The exported `sfConn` below is the singleton used by pages that have not
+// yet been migrated to the scoped factory (100% backwards-compatible).
+
+const sfConnPrototype = {
 
   async getSession(sfHost) {
     const url = new URL(window.location.href);
@@ -65,15 +364,32 @@ export let sfConn = {
     } else if (oldToken) {
       this.sessionId = oldToken;
     } else {
-      let message = await new Promise(resolve =>
-        chrome.runtime.sendMessage({message: "getSession", sfHost}, resolve));
-      if (message) {
-        this.instanceHostname = getMyDomain(message.hostname);
-        this.sessionId = message.key;
+      // ── Electron path ────────────────────────────────────────────────────────
+      // When running in Electron, electronApi.getSession is available on the
+      // window object via the preload contextBridge.  Pass both orgId (for
+      // vault lookup by key) and sfHost (fallback lookup) so the main process
+      // can find the right session regardless of which was stored first.
+      if (window.electronApi?.getSession) {
+        const res = await window.electronApi.getSession({
+          orgId: this.orgId,   // may be undefined on the legacy singleton
+          sfHost,
+        });
+        if (res) {
+          this.instanceHostname = getMyDomain(res.hostname);
+          this.sessionId = res.key;
+        }
+      } else {
+        // ── Browser extension path ─────────────────────────────────────────────
+        let message = await new Promise(resolve =>
+          chrome.runtime.sendMessage({message: "getSession", sfHost}, resolve));
+        if (message) {
+          this.instanceHostname = getMyDomain(message.hostname);
+          this.sessionId = message.key;
+        }
       }
     }
     if (localStorage.getItem(sfHost + "_trialExpirationDate") == null) {
-      sfConn.rest("/services/data/v" + apiVersion + "/query/?q=SELECT+IsSandbox,+InstanceName+,TrialExpirationDate+FROM+Organization").then(res => {
+      this.rest("/services/data/v" + apiVersion + "/query/?q=SELECT+IsSandbox,+InstanceName+,TrialExpirationDate+FROM+Organization").then(res => {
         localStorage.setItem(sfHost + "_isSandbox", res.records[0].IsSandbox);
         localStorage.setItem(sfHost + "_orgInstance", res.records[0].InstanceName);
         localStorage.setItem(sfHost + "_trialExpirationDate", res.records[0].TrialExpirationDate);
@@ -368,6 +684,13 @@ export let sfConn = {
 
 };
 
+// ── Backwards-compatible singleton export ─────────────────────────────────────
+//
+// Existing addon pages that do `import { sfConn } from "./inspector.js"` and
+// call sfConn.getSession / sfConn.rest etc. continue to work unchanged because
+// this singleton is an instance of sfConnPrototype.
+export let sfConn = Object.create(sfConnPrototype);
+
 export class XML {
   static stringify({name, attributes, value}) {
     function buildRequest(el, params) {
@@ -452,6 +775,8 @@ export class XML {
 function getMyDomain(host) {
   if (host) {
     const myDomain = host
+      .replace(/^https?:\/\//i, "")
+      .replace(/\/.*$/, "")
       .replace(/\.lightning\.force\./, ".my.salesforce.") //avoid HTTP redirect (that would cause Authorization header to be dropped)
       .replace(/\.lightning\.([^.]+)\.force\.com$/, ".my.$1.salesforce.com") // handle hosts like *.lightning.xx-xxx.force.com
       .replace(/\.mcas\.ms$/, ""); //remove trailing .mcas.ms if the client uses Microsoft Defender for Cloud Apps
@@ -466,3 +791,74 @@ function showToastBanner(){
   const containerToMask = document.getElementById("mainTabs");
   if (containerToMask) { containerToMask.classList.add("mask"); }
 }
+
+// ── Per-org scoped inspector factory ─────────────────────────────────────────
+//
+// Used by the Electron renderer shell to give each connected org its own
+// isolated sfConn instance and its own DescribeInfo cache.
+//
+// Keyed strictly by orgId so switching between orgs never leaks state.
+//
+// CIRCULAR-IMPORT NOTE: data-load.js imports inspector.js, so inspector.js
+// cannot statically or dynamically import data-load.js at the module level.
+// Instead, the factory accepts an optional DescribeInfoClass parameter.
+// Callers that want the ScopedDescribeInfo sub-class should pass in the
+// DescribeInfo they imported from data-load.js themselves:
+//
+//   import { createOrgScopedInspector } from "./inspector.js";
+//   import { DescribeInfo } from "./data-load.js";
+//   const { sfConn, DescribeInfo: ScopedDI } =
+//       createOrgScopedInspector(orgId, sfHost, DescribeInfo);
+
+const orgRegistry = new Map(); // Map<orgId, { sfConn, DescribeInfo, describeCache }>
+
+/**
+ * Return (or lazily create) an isolated { sfConn, DescribeInfo, describeCache }
+ * bundle for the given orgId.
+ *
+ * @param {string}   orgId           - 18-char Salesforce Org ID (registry key).
+ * @param {string}   sfHost          - Instance hostname, e.g. "myinstance.salesforce.com".
+ * @param {Function} [DescribeInfoClass] - The DescribeInfo constructor from data-load.js.
+ *                                        When provided, a ScopedDescribeInfo sub-class
+ *                                        that pre-wires scopedContext is returned under
+ *                                        the `DescribeInfo` key of the result.
+ */
+export function createOrgScopedInspector(orgId, sfHost, DescribeInfoClass = null) {
+  if (!orgRegistry.has(orgId)) {
+    // Create an isolated sfConn instance backed by sfConnPrototype
+    const scopedSfConn = Object.create(sfConnPrototype);
+    scopedSfConn.orgId = orgId;
+    scopedSfConn.instanceHostname = sfHost;
+    scopedSfConn.sessionId = null;
+
+    // Shared describe cache so multiple Sub-Tabs for the same org reuse
+    // already-fetched describe results.
+    const describeCache = { normal: null, tooling: null };
+
+    let ScopedDescribeInfoClass = null;
+    const BaseDescribeInfo = DescribeInfoClass || DefaultDescribeInfo;
+    if (BaseDescribeInfo) {
+      ScopedDescribeInfoClass = function(spinFor, didUpdate) {
+        return BaseDescribeInfo(spinFor, didUpdate, { sfConn: scopedSfConn, describeCache });
+      };
+    }
+
+    orgRegistry.set(orgId, {
+      sfConn: scopedSfConn,
+      DescribeInfo: ScopedDescribeInfoClass,
+      describeCache,
+    });
+  }
+  return orgRegistry.get(orgId);
+}
+
+/**
+ * Remove an org's scoped state from the registry, releasing all cached
+ * describe data and allowing GC to reclaim the sfConn instance.
+ *
+ * @param {string} orgId
+ */
+export function destroyOrgScopedInspector(orgId) {
+  orgRegistry.delete(orgId);
+}
+

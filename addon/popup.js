@@ -15,6 +15,18 @@ if (typeof browser === "undefined") {
 }
 
 {
+  const searchHost = new URLSearchParams(window.location.search).get("host");
+  if (searchHost) {
+    const cleanSearchHost = searchHost.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+    init({
+      sfHost: cleanSearchHost,
+      inDevConsole: false,
+      inLightning: true,
+      inInspector: true,
+    });
+    initLinks({ sfHost: cleanSearchHost });
+  }
+
   parent.postMessage(
     {
       insextInitRequest: true,
@@ -24,7 +36,7 @@ if (typeof browser === "undefined") {
   );
   addEventListener("message", function initResponseHandler(e) {
     if (e.source == parent) {
-      if (e.data.insextInitResponse) {
+      if (e.data.insextInitResponse || e.data.insextLoaded) {
         init(e.data);
         initLinks(e.data);
       } else if (e.data.updateLocalStorage) {

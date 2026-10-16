@@ -2,6 +2,8 @@
 *.xpi
 *.zip
 node_modules/
+dist/
+out/
 temp/
 *.bak
 npm-debug.log

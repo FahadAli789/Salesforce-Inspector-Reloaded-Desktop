@@ -1,6 +1,12 @@
 {
-  "name": "salesforce-inspector",
+  "name": "salesforce-inspector-reloaded-desktop",
+  "version": "2.1.0",
+  "description": "Salesforce Inspector Reloaded Desktop – Standalone desktop application for Salesforce configuration, debugging, and productivity.",
+  "main": "out/main/index.js",
   "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
     "eslint": "eslint .",
     "firefox-release-build": "node scripts/release-build.js firefox",
     "chrome-release-build": "node scripts/release-build.js chrome",
@@ -11,16 +17,28 @@
     "test:e2e:debug": "npx playwright test --ui --debug",
     "chrome-beta-build": "ENVIRONMENT_TYPE=BETA node scripts/release-build.js chrome"
   },
+  "dependencies": {
+    "electron-updater": "^6.1.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
   "devDependencies": {
     "@eslint/compat": "^1.2.2",
     "@eslint/js": "^9.14.0",
     "@playwright/test": "^1.57.0",
-    "@types/node": "^25.0.2",
+    "@types/node": "^22.10.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.0",
+    "electron-vite": "^2.3.0",
     "eslint": "^9.14.0",
     "eslint-plugin-react": "^7.37.2",
     "fs-extra": "11.2.0",
     "globals": "^15.12.0",
     "replace-in-file": "8.2.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
     "zip-dir": "2.0.0"
   },
   "overrides": {

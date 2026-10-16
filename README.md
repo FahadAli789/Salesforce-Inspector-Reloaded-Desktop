@@ -1,45 +1,69 @@
 <img src="https://raw.githubusercontent.com/tprouvot/Salesforce-Inspector-reloaded/main/addon/icon128.png" align="right">
 
-# Salesforce Inspector Reloaded
+# Salesforce Inspector Reloaded Desktop
 
-![GitHub release](https://img.shields.io/github/v/release/tprouvot/Salesforce-Inspector-reloaded?sort=semver)
-[![Chrome Web Store Installs](https://img.shields.io/chrome-web-store/users/hpijlohoihegkfehhibggnkbjhoemldh)](https://chrome.google.com/webstore/detail/salesforce-inspector-relo/hpijlohoihegkfehhibggnkbjhoemldh)
-[![Chrome Web Store Rating](https://img.shields.io/chrome-web-store/rating/hpijlohoihegkfehhibggnkbjhoemldh)](https://chrome.google.com/webstore/detail/salesforce-inspector-relo/hpijlohoihegkfehhibggnkbjhoemldh)
-[![GitHub stars](https://img.shields.io/github/stars/tprouvot/Salesforce-Inspector-reloaded?cacheSeconds=3600)](https://github.com/tprouvot/Salesforce-Inspector-reloaded/stargazers/)
-[![GitHub contributors](https://img.shields.io/github/contributors/tprouvot/Salesforce-Inspector-reloaded.svg)](https://github.com/tprouvot/Salesforce-Inspector-reloaded/graphs/contributors/)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](http://makeapullrequest.com)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com)
+[![Built with](https://img.shields.io/badge/built%20with-Electron%20%2B%20Vite%20%2B%20React-61dafb.svg)](https://electronjs.org)
 
-Chrome and Firefox extension to add a metadata layout on top of the standard Salesforce UI to improve the productivity and joy of Salesforce configuration, development, and integration work.
+**Salesforce Inspector Reloaded Desktop** is an open-source, standalone desktop port of [Salesforce Inspector Reloaded](https://github.com/tprouvot/Salesforce-Inspector-reloaded). It liberates the powerhouse Salesforce administration and development suite from the browser extension sandbox, delivering a dedicated desktop workspace with multi-org session isolation, encrypted credential vaulting, and native performance.
 
-We all know and love Salesforce Inspector: As the great Søren Krabbe did not maintain it anymore, I decided to take over so the trailblazer community can keep asking for new features!
+---
 
-- [New features compared to the original SF Inspector](#new-features-compared-to-original-sf-inspector)
-- [Security and Privacy](#security-and-privacy)
-- [Use Salesforce Inspector with a Connected App](#use-salesforce-inspector-with-a-connected-app)
-- [Installation](#installation)
-  - [Browser Stores](#browser-stores)
-    - [Chrome Web Store](https://chrome.google.com/webstore/detail/salesforce-inspector-relo/hpijlohoihegkfehhibggnkbjhoemldh)
-    - [Firefox Browser Add-ons](https://addons.mozilla.org/en-US/firefox/addon/salesforce-inspector-reloaded/)
-    - [Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/salesforce-inspector-relo/noclfopoifgfgnflgkakofglfeeambpd)
-  - [Beta Version](#beta-version)
-    - [Chrome Web Store](https://chromewebstore.google.com/detail/salesforce-inspector-relo/lopjgjcglnncikiocpacfdbkmpbfmkcf)
-- [Troubleshooting](#troubleshooting)
-- [Contributions](#contributions)
-- [Development](#development)
-  - [Chrome](#chrome)
-  - [Firefox](#firefox)
-  - [Unit tests](#unit-tests)
-  - [Linting](#linting)
-- [Release](#release)
-  - [Chrome](#chrome)
-  - [Firefox](#firefox)
-- [Design Principles](#design-principles)
-- [About](#about)
-- [License](#license)
+## 🌟 Acknowledgements & Full Credits
 
-## Documentation
+This desktop project is built upon the incredible foundational work of the Salesforce open-source community:
 
-> User guide for using the extension.
+1. **[Salesforce Inspector Reloaded](https://github.com/tprouvot/Salesforce-Inspector-reloaded)** — Maintained and spearheaded by **[Thomas Prouvot (@tprouvot)](https://github.com/tprouvot)** and its generous open-source contributors. The extension revolutionized modern Salesforce administration with REST Explorer, Event Monitoring, Field Creator, Flow Scanner, and dark mode.
+2. **Original Salesforce Inspector** — Created by **[Søren Krabbe (@sorenkrabbe)](https://github.com/sorenkrabbe)** and **[Jesper Kristensen](https://github.com/sorenkrabbe/Chrome-Salesforce-inspector)**. Their groundbreaking vision made browser-based Salesforce inspection an indispensable daily tool for hundreds of thousands of Trailblazers.
+
+All credit for the core Salesforce inspection tools, UI layouts, and domain workflows belongs to Thomas Prouvot, Søren Krabbe, and their contributors. This desktop application is an appreciative port dedicated to expanding that functionality to a standalone desktop environment.
+
+---
+
+## 🖥️ About the Desktop Port
+
+The Desktop port bridges the gap for administrators, developers, and consultants who manage multiple Salesforce environments and need a focused, persistent desktop tool without relying on browser tab permissions or session cookies.
+
+### Key Desktop Capabilities:
+- 🏢 **Multi-Org Workspaces**: Connect and switch across multiple Salesforce Production, Sandbox, and Scratch Orgs simultaneously.
+- 🔒 **Encrypted Local Vault**: Session IDs, tokens, and instance hostnames are securely stored locally using OS-level secure storage primitives.
+- ⚡ **Scoped Session Architecture**: Each tab maintains isolated `sfConn` session state and metadata Describe caches, preventing cross-org query pollution.
+- 🚀 **Modern Tech Stack**: Powered by **Electron**, **Vite**, **React**, and **TypeScript**, bundling the upstream web app seamlessly via Electron IPC bridges.
+- 🛠️ **Full Feature Parity**: Direct access to SOQL Data Export, Data Import, Object Limits, REST Explorer, Event Monitor, Field Creator, and Metadata Explorer.
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+- Node.js (v18 or higher)
+- npm or yarn
+
+### Installation
+```bash
+git clone https://github.com/<your-username>/salesforce-inspector-reloaded-desktop.git
+cd salesforce-inspector-reloaded-desktop
+npm install
+```
+
+### Running Locally
+```bash
+# Start desktop application in development mode with live reload
+npm run dev
+
+# Build the desktop application for production
+npm run build
+
+# Preview the production build
+npm run preview
+```
+
+---
+
+## 📚 Upstream Documentation & Features
+
+> Upstream user guides and tutorials created by the Salesforce Inspector Reloaded team:
 
 [![view - Documentation](https://img.shields.io/badge/view-Documentation-blue?style=for-the-badge)](https://tprouvot.github.io/Salesforce-Inspector-reloaded/ "Go to extension documentation")
 
@@ -249,7 +273,9 @@ See [How to run tests](tests/HOW_TO_RUN_TESTS.md).
 
 ## About
 
-By Thomas Prouvot and forked from [Søren Krabbe and Jesper Kristensen](https://github.com/sorenkrabbe/Chrome-Salesforce-inspector)
+- **Desktop Port**: Salesforce Inspector Reloaded Desktop
+- **Salesforce Inspector Reloaded**: [Thomas Prouvot (@tprouvot)](https://github.com/tprouvot/Salesforce-Inspector-reloaded)
+- **Original Salesforce Inspector**: Forked originally from [Søren Krabbe and Jesper Kristensen](https://github.com/sorenkrabbe/Chrome-Salesforce-inspector)
 
 ## Third-Party Libraries
 
