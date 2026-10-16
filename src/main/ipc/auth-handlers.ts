@@ -322,4 +322,94 @@ export function registerAuthHandlers(): void {
       return await response.text();
     }
   );
+
+  // ── sf:soap-request ────────────────────────────────────────────────────────
+  ipcMain.handle(
+    "sf:soap-request",
+    async (
+      _event,
+      args: {
+        sfHost: string;
+        path: string;
+        soapAction?: string;
+        xmlBody: string;
+        headers?: Record<string, string>;
+      }
+    ): Promise<{ status: number; data: string }> => {
+      const {
+        sfHost,
+        path: reqPath,
+        soapAction = '""',
+        xmlBody,
+        headers = {},
+      } = args;
+      if (!sfHost) {
+        throw new Error("Missing sfHost in sf:soap-request");
+      }
+
+      let session = await getValidSession({ sfHost }, false);
+      if (!session || !session.key) {
+        throw new Error(`No valid session found for host: ${sfHost}`);
+      }
+
+      const bareHost = normalizeSfHost(session.hostname || sfHost);
+      const cleanPath = reqPath.startsWith("/") ? reqPath : `/${reqPath}`;
+      const url = `https://${bareHost}${cleanPath}`;
+
+      const makeSoapRequest = async (token: string, bodyText: string) => {
+        let finalBody = bodyText;
+        if (finalBody.includes("<sessionId>")) {
+          finalBody = finalBody.replace(
+            /<sessionId>[^<]*<\/sessionId>/g,
+            `<sessionId>${token}</sessionId>`
+          );
+        }
+
+        const reqHeaders: Record<string, string> = {
+          "Content-Type": "text/xml; charset=UTF-8",
+          SOAPAction: soapAction,
+          ...headers,
+        };
+
+        return await fetch(url, {
+          method: "POST",
+          headers: reqHeaders,
+          body: finalBody,
+        });
+      };
+
+      let response = await makeSoapRequest(session.key, xmlBody);
+
+      // If 401 Unauthorized, refresh the session once and retry
+      if (response.status === 401) {
+        console.warn(
+          `[sf:soap-request] 401 received for ${bareHost}${cleanPath}, refreshing session...`
+        );
+        const refreshed = await getValidSession({ sfHost }, true);
+        if (refreshed && refreshed.key) {
+          response = await makeSoapRequest(refreshed.key, xmlBody);
+        }
+      }
+
+      let responseText = await response.text();
+
+      // If status 500 with INVALID_SESSION_ID in SOAP fault, try refreshing once
+      if (
+        response.status >= 400 &&
+        (responseText.includes("INVALID_SESSION_ID") ||
+          responseText.includes("Session expired or invalid"))
+      ) {
+        console.warn(
+          `[sf:soap-request] SOAP fault with INVALID_SESSION_ID for ${bareHost}${cleanPath}, refreshing...`
+        );
+        const refreshed = await getValidSession({ sfHost }, true);
+        if (refreshed && refreshed.key) {
+          response = await makeSoapRequest(refreshed.key, xmlBody);
+          responseText = await response.text();
+        }
+      }
+
+      return { status: response.status, data: responseText };
+    }
+  );
 }

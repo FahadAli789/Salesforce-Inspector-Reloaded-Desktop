@@ -132,6 +132,19 @@ contextBridge.exposeInMainWorld("electronApi", {
   }): Promise<any> => ipcRenderer.invoke("sf:rest-request", args),
 
   /**
+   * Perform an authenticated Salesforce SOAP request via Electron Main process.
+   * Handles raw XML payload, SOAPAction header, and token refresh on 401.
+   */
+  sfSoapRequest: (args: {
+    sfHost: string;
+    path: string;
+    soapAction?: string;
+    xmlBody: string;
+    headers?: Record<string, string>;
+  }): Promise<{ status: number; data: string }> =>
+    ipcRenderer.invoke("sf:soap-request", args),
+
+  /**
    * Alias for loginWithManualSession
    */
   loginManual: (payload: LoginManualPayload): Promise<OrgProfile> =>
@@ -142,6 +155,7 @@ contextBridge.exposeInMainWorld("electronApi", {
 try {
   contextBridge.exposeInMainWorld("electronAPI", {
     sfRestRequest: (args: any) => ipcRenderer.invoke("sf:rest-request", args),
+    sfSoapRequest: (args: any) => ipcRenderer.invoke("sf:soap-request", args),
   });
 } catch {}
 

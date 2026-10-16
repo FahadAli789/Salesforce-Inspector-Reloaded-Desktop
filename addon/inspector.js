@@ -664,21 +664,63 @@ const sfConnPrototype = {
       let responseBody = xhr.response.querySelector(method + "Response");
       let parsed = XML.parse(responseBody).result;
       return parsed;
-    } else {
-      console.error("Received error response from Salesforce SOAP API", xhr);
-      let err = new Error();
-      err.name = "SalesforceSoapError";
-      err.detail = xhr.response;
-      try {
-        errorMessage = xhr.response.querySelector("faultstring").textContent;
-        err.message = errorMessage;
-      } catch (ex) {
-        errorMessage = `HTTP error ${xhr.status} ${xhr.statusText}`;
-        err.message = errorMessage;
-      }
-      apiStatistics.trackApiCall("soap", null, method, duration, true, errorMessage);
-      throw err;
     }
+
+    // Fallback: If XHR status is 0 (CORS preflight or network drop in renderer) and running in Electron
+    const electronApi =
+      (typeof window !== "undefined" && (window.electronApi || window.electronAPI)) ||
+      (typeof window !== "undefined" && window.parent && (window.parent.electronApi || window.parent.electronAPI)) ||
+      (typeof window !== "undefined" && window.top && (window.top.electronApi || window.top.electronAPI));
+
+    if (xhr.status === 0 && electronApi?.sfSoapRequest) {
+      try {
+        console.warn("[sfConn.soap] XHR status 0 detected, retrying via Electron sfSoapRequest IPC bridge...");
+        const res = await electronApi.sfSoapRequest({
+          sfHost: this.instanceHostname,
+          path: wsdl.servicePortAddress + "?cache=" + Math.random(),
+          soapAction: '""',
+          xmlBody: requestBody,
+          headers: {
+            CallOptions: `client:${getCallOptionsClientId()}`
+          }
+        });
+        if (res && res.status === 200) {
+          const doc = new DOMParser().parseFromString(res.data, "text/xml");
+          const responseBody = doc.querySelector(method + "Response");
+          if (responseBody) {
+            apiStatistics.trackApiCall("soap", null, method, performance.now() - startTime, false);
+            return XML.parse(responseBody).result;
+          }
+        } else if (res && res.data) {
+          const doc = new DOMParser().parseFromString(res.data, "text/xml");
+          const fault = doc.querySelector("faultstring");
+          if (fault) {
+            errorMessage = fault.textContent;
+            let err = new Error(errorMessage);
+            err.name = "SalesforceSoapError";
+            apiStatistics.trackApiCall("soap", null, method, performance.now() - startTime, true, errorMessage);
+            throw err;
+          }
+        }
+      } catch (fallbackErr) {
+        if (fallbackErr.name === "SalesforceSoapError") throw fallbackErr;
+        console.error("[sfConn.soap] Fallback sfSoapRequest error:", fallbackErr);
+      }
+    }
+
+    console.error("Received error response from Salesforce SOAP API", xhr);
+    let err = new Error();
+    err.name = "SalesforceSoapError";
+    err.detail = xhr.response;
+    try {
+      errorMessage = xhr.response.querySelector("faultstring").textContent;
+      err.message = errorMessage;
+    } catch (ex) {
+      errorMessage = `HTTP error ${xhr.status} ${xhr.statusText}`;
+      err.message = errorMessage;
+    }
+    apiStatistics.trackApiCall("soap", null, method, duration, true, errorMessage);
+    throw err;
   },
 
   asArray(x) {

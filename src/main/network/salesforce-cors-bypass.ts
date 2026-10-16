@@ -21,26 +21,47 @@
 
 import type { Session } from "electron";
 
-// ── URL filter ────────────────────────────────────────────────────────────────
-//
-// This list mirrors the host_permissions in addon/manifest.json so we intercept
-// exactly the same set of domains that the browser extension has access to.
+// ── Known Salesforce host domains ─────────────────────────────────────────────
+const SF_DOMAINS = [
+  "salesforce.com",
+  "force.com",
+  "cloudforce.com",
+  "visual.force.com",
+  "visualforce.com",
+  "sfcrmapps.cn",
+  "sfcrmproducts.cn",
+  "salesforce.mil",
+  "force.mil",
+  "crmforce.mil",
+  "salesforce-setup.com",
+  "salesforce-communities.com",
+  "site.com",
+  "builder.salesforce-experience.com",
+];
 
-const SF_URL_FILTER: Electron.WebRequestFilter = {
-  urls: [
-    "*://*.salesforce.com/*",
-    "*://*.force.com/*",
-    "*://*.cloudforce.com/*",
-    "*://*.visual.force.com/*",
-    "*://*.visualforce.com/*",
-    "*://*.sfcrmapps.cn/*",
-    "*://*.sfcrmproducts.cn/*",
-    "*://*.salesforce.mil/*",
-    "*://*.force.mil/*",
-    "*://*.crmforce.mil/*",
-    "*://*.builder.salesforce-experience.com/*",
-  ],
-};
+/**
+ * Checks whether a URL targets a Salesforce API endpoint or domain.
+ * Captures all SOAP (/services/Soap/*) and REST (/services/data/*) endpoints
+ * regardless of host, plus any known Salesforce domain.
+ */
+export function isSalesforceOrSoapUrl(urlStr: string): boolean {
+  if (
+    urlStr.includes("/services/Soap/") ||
+    urlStr.includes("/services/data/") ||
+    urlStr.includes("/services/apexrest/") ||
+    urlStr.includes("/services/oauth2/") ||
+    urlStr.includes("/services/async/")
+  ) {
+    return true;
+  }
+  try {
+    const u = new URL(urlStr);
+    const host = u.hostname.toLowerCase();
+    return SF_DOMAINS.some((d) => host === d || host.endsWith("." + d));
+  } catch {
+    return urlStr.includes("salesforce.com") || urlStr.includes("force.com");
+  }
+}
 
 // Headers that Salesforce SOAP / REST need to accept from the renderer
 const ALLOWED_REQUEST_HEADERS = [
@@ -48,12 +69,21 @@ const ALLOWED_REQUEST_HEADERS = [
   "Content-Type",
   "Accept",
   "SOAPAction",
+  "CallOptions",
   "Sforce-Call-Options",
   "Sforce-Auto-Assign",
   "Sforce-Duplicate-Rule-Header",
   "Sforce-Query-Options",
   "X-SFDC-Session",
   "X-PrettyPrint",
+  "Origin",
+  "User-Agent",
+  "X-Requested-With",
+  "Range",
+  "Cache-Control",
+  "Pragma",
+  "Priority",
+  "*",
 ].join(", ");
 
 // ── Helper: case-insensitive header deletion ──────────────────────────────────
@@ -73,73 +103,120 @@ function deleteHeader(
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export function installSalesforceCorsBypass(session: Session): void {
+  const ALL_FILTER: Electron.WebRequestFilter = { urls: ["*://*/*"] };
+  const requestOriginMap = new Map<number, string>();
+
   // ── Request side ───────────────────────────────────────────────────────────
-  //
-  // Remove Origin and Referer before the request leaves Electron.
-  // Salesforce SOAP endpoints will reject requests that arrive with an
-  // Origin header that doesn't match an allow-listed domain, and REST
-  // endpoints may return 403 / CORS rejection for the same reason.
+  session.webRequest.onBeforeSendHeaders(ALL_FILTER, (details, callback) => {
+    if (!isSalesforceOrSoapUrl(details.url)) {
+      callback({ cancel: false });
+      return;
+    }
 
-  session.webRequest.onBeforeSendHeaders(
-    SF_URL_FILTER,
-    (details, callback) => {
-      const requestHeaders: Record<string, string | string[]> = {
-        ...details.requestHeaders,
-      };
+    const requestHeaders: Record<string, string | string[]> = {
+      ...details.requestHeaders,
+    };
 
-      // Delete both capitalised and lowercase variants defensively
+    // Store requesting Origin so onHeadersReceived can mirror it if needed
+    const origin = requestHeaders["Origin"] || requestHeaders["origin"];
+    if (origin) {
+      requestOriginMap.set(
+        details.id,
+        Array.isArray(origin) ? origin[0] : origin
+      );
+    }
+
+    // Crucial: DO NOT delete Origin on OPTIONS preflight!
+    // Chromium's CORS preflight mechanism requires the Origin header.
+    // For actual requests (POST, GET, etc.), strip Origin and Referer so Salesforce
+    // servers never reject the request due to CORS un-whitelisted domains.
+    if (details.method !== "OPTIONS") {
       deleteHeader(requestHeaders, "Origin");
       deleteHeader(requestHeaders, "Referer");
-
-      callback({ requestHeaders });
     }
-  );
+
+    // Ensure SOAPAction header is preserved for SOAP endpoints
+    if (details.url.includes("/services/Soap/")) {
+      if (
+        requestHeaders["SOAPAction"] === undefined &&
+        requestHeaders["soapaction"] === undefined
+      ) {
+        requestHeaders["SOAPAction"] = '""';
+      }
+    }
+
+    callback({ cancel: false, requestHeaders });
+  });
 
   // ── Response side ──────────────────────────────────────────────────────────
-  //
-  // The browser's CORS implementation checks response headers before letting
-  // the renderer see the body.  We inject the permissive set here so all
-  // Salesforce API responses (REST, Tooling, Bulk, Composite, SOAP) pass the
-  // CORS check regardless of what the server actually returned.
+  session.webRequest.onHeadersReceived(ALL_FILTER, (details, callback) => {
+    if (!isSalesforceOrSoapUrl(details.url)) {
+      callback({ cancel: false });
+      return;
+    }
 
-  session.webRequest.onHeadersReceived(SF_URL_FILTER, (details, callback) => {
     const responseHeaders: Record<string, string | string[]> = {
       ...details.responseHeaders,
     };
 
-    // ── Wipe existing CORS headers (prevents "multiple values" errors) ────────
+    // Wipe existing CORS headers to prevent duplicate values
     deleteHeader(responseHeaders, "access-control-allow-origin");
     deleteHeader(responseHeaders, "access-control-allow-headers");
     deleteHeader(responseHeaders, "access-control-allow-methods");
     deleteHeader(responseHeaders, "access-control-expose-headers");
     deleteHeader(responseHeaders, "access-control-allow-credentials");
+    deleteHeader(responseHeaders, "access-control-max-age");
 
-    // ── Inject permissive CORS headers ────────────────────────────────────────
-    responseHeaders["Access-Control-Allow-Origin"] = ["*"];
+    // Retrieve requesting Origin if captured, or fallback to referrer origin or wildcard
+    const storedOrigin = requestOriginMap.get(details.id);
+    requestOriginMap.delete(details.id);
+
+    let allowOrigin = "*";
+    if (storedOrigin && storedOrigin !== "null") {
+      allowOrigin = storedOrigin;
+    } else if (details.referrer) {
+      try {
+        const parsed = new URL(details.referrer);
+        if (parsed.origin && parsed.origin !== "null") {
+          allowOrigin = parsed.origin;
+        }
+      } catch {}
+    }
+
+    responseHeaders["Access-Control-Allow-Origin"] = [allowOrigin];
+    if (allowOrigin !== "*") {
+      responseHeaders["Access-Control-Allow-Credentials"] = ["true"];
+    }
+
     responseHeaders["Access-Control-Allow-Methods"] = [
       "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
     ];
-    responseHeaders["Access-Control-Allow-Headers"] = [
-      ALLOWED_REQUEST_HEADERS,
-    ];
-    // Expose all response headers to JS (e.g. Sforce-Limit-Info)
+    responseHeaders["Access-Control-Allow-Headers"] = [ALLOWED_REQUEST_HEADERS];
     responseHeaders["Access-Control-Expose-Headers"] = ["*"];
+    responseHeaders["Access-Control-Max-Age"] = ["86400"];
 
-    // ── OPTIONS preflight: force 200 so the browser completes immediately ─────
+    // ── OPTIONS preflight: force 200 OK so the browser completes immediately ──
     if (details.method === "OPTIONS") {
       callback({
+        cancel: false,
         responseHeaders,
         statusLine: "HTTP/1.1 200 OK",
       });
       return;
     }
 
-    callback({ responseHeaders });
+    callback({ cancel: false, responseHeaders });
+  });
+
+  // Clean up origin map on error or completion
+  session.webRequest.onErrorOccurred(ALL_FILTER, (details) => {
+    requestOriginMap.delete(details.id);
+  });
+  session.webRequest.onCompleted(ALL_FILTER, (details) => {
+    requestOriginMap.delete(details.id);
   });
 
   console.log(
-    "[salesforce-cors-bypass] webRequest hooks installed on",
-    SF_URL_FILTER.urls.length,
-    "URL patterns."
+    "[salesforce-cors-bypass] webRequest hooks installed for Salesforce SOAP/REST endpoints."
   );
 }
