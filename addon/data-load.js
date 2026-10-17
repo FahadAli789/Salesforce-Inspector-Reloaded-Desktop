@@ -130,7 +130,7 @@ export function s(num, suffix = "s") {
   return num == 1 ? "" : suffix;
 }
 
-function renderCell(rt, cell, td) {
+function renderCell(rt, cell, td, r, c) {
   function popLink(recordInfo, label) {
     let a = document.createElement("a");
     a.href = "about:blank";
@@ -373,6 +373,9 @@ function renderCell(rt, cell, td) {
     td.textContent = localTime;
   } else {
     td.textContent = cell;
+  }
+  if (rt && typeof rt.onCellRendered === "function") {
+    rt.onCellRendered(rt, cell, td, r, c);
   }
 }
 
@@ -625,7 +628,7 @@ export function initScrollTable(scroller) {
           td.className = cellClasses;
           td.style.minWidth = colWidths[c] + "px";
           td.style.height = rowHeights[r] + "px";
-          renderCell(data, cell, td);
+          renderCell(data, cell, td, r, c);
           tr.appendChild(td);
         }
         table.appendChild(tr);
@@ -655,7 +658,7 @@ export function initScrollTable(scroller) {
           td.className = cellClasses;
           td.style.minWidth = colWidths[c] + "px";
           td.style.height = rowHeights[r] + "px";
-          renderCell(data, cell, td);
+          renderCell(data, cell, td, r, c);
           tr.appendChild(td);
           cellsVisible = true;
         }

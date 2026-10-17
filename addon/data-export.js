@@ -32,6 +32,19 @@ class Model {
     this.filterColumn = ""; // Default filter column
     this.initialQuery = "";
     this.spinnerCount = 0;
+    this.draftEdits = new Map();
+    this.originalCellValues = new Map();
+    this.isSavingDrafts = false;
+    this.draftSaveStatus = null;
+    this.activeCell = null;
+    this.selectionRange = null;
+    this.isDraggingFillHandle = false;
+    this.fillHandleOrigin = null;
+    this.fillDragTargetRow = null;
+    this.isDraggingSelection = false;
+    this.isEditingAnyCell = false;
+    this.lastActiveClickCell = null;
+    this.undoStack = [];
 
     // Initialize spinFor method early - needed by describeInfo and userInfoModel
     this.spinFor = createSpinForMethod(this);
@@ -846,6 +859,19 @@ class Model {
   }
   doExport() {
     let vm = this; // eslint-disable-line consistent-this
+    vm.draftEdits.clear();
+    vm.originalCellValues.clear();
+    vm.draftSaveStatus = null;
+    vm.isSavingDrafts = false;
+    vm.activeCell = null;
+    vm.selectionRange = null;
+    vm.isDraggingFillHandle = false;
+    vm.fillHandleOrigin = null;
+    vm.fillDragTargetRow = null;
+    vm.isDraggingSelection = false;
+    vm.isEditingAnyCell = false;
+    vm.lastActiveClickCell = null;
+    vm.undoStack = [];
     let exportedData = new RecordTable(vm);
     exportedData.isTooling = vm.queryTooling;
     exportedData.describeInfo = vm.describeInfo;
@@ -1213,6 +1239,686 @@ class Model {
   getCurrentTabQuery() {
     return this.queryTabs[this.activeTabIndex]?.query || "";
   }
+
+  getDraftRecordCount() {
+    const recordIds = new Set();
+    for (const edit of this.draftEdits.values()) {
+      recordIds.add(edit.recordId);
+    }
+    return recordIds.size;
+  }
+
+  detectSObjectType() {
+    if (this.exportedData && this.exportedData.records && this.exportedData.records.length > 0) {
+      const rec = this.exportedData.records[0];
+      if (rec && rec.attributes && rec.attributes.type) {
+        return rec.attributes.type;
+      }
+    }
+    const query = this.queryInput ? this.queryInput.value : "";
+    const m = /\bfrom\s+([a-zA-Z0-9_]+)\b/i.exec(query);
+    return m ? m[1] : "";
+  }
+
+  setDraftEdit(recordId, fieldName, sObjectType, r, c, originalValue, draftValue) {
+    const key = `${recordId}:${fieldName}`;
+    this.draftEdits.set(key, {
+      recordId,
+      sObjectType,
+      fieldName,
+      originalValue,
+      draftValue,
+      r,
+      c
+    });
+    if (this.exportedData && this.exportedData.table && this.exportedData.table[r]) {
+      this.exportedData.table[r][c] = draftValue;
+    }
+    this.draftSaveStatus = null;
+    this.didUpdate();
+  }
+
+  removeDraftEdit(recordId, fieldName, r, c) {
+    const key = `${recordId}:${fieldName}`;
+    if (this.draftEdits.has(key)) {
+      const edit = this.draftEdits.get(key);
+      this.draftEdits.delete(key);
+      if (this.exportedData && this.exportedData.table && this.exportedData.table[r]) {
+        this.exportedData.table[r][c] = edit.originalValue;
+      }
+      this.didUpdate();
+    }
+  }
+
+  discardAllDrafts() {
+    if (this.draftEdits.size === 0) return;
+    for (const edit of this.draftEdits.values()) {
+      if (this.exportedData && this.exportedData.table && this.exportedData.table[edit.r]) {
+        this.exportedData.table[edit.r][edit.c] = edit.originalValue;
+      }
+    }
+    this.draftEdits.clear();
+    this.draftSaveStatus = null;
+    this.undoStack = [];
+    if (this.resultTableCallback) {
+      this.resultTableCallback(this.exportedData);
+    }
+    this.didUpdate();
+  }
+
+  pushUndoAction(items) {
+    if (!items || items.length === 0) return;
+    this.undoStack.push(items);
+    if (this.undoStack.length > 50) {
+      this.undoStack.shift();
+    }
+  }
+
+  undo() {
+    if (!this.undoStack || this.undoStack.length === 0) return;
+    const action = this.undoStack.pop();
+    for (const item of action) {
+      const key = `${item.recordId}:${item.fieldName}`;
+      if (item.previousDraftInfo) {
+        this.draftEdits.set(key, { ...item.previousDraftInfo });
+        if (this.exportedData && this.exportedData.table && this.exportedData.table[item.r]) {
+          this.exportedData.table[item.r][item.c] = item.previousDraftInfo.draftValue;
+        }
+      } else {
+        this.draftEdits.delete(key);
+        if (this.exportedData && this.exportedData.table && this.exportedData.table[item.r]) {
+          this.exportedData.table[item.r][item.c] = item.originalValue;
+        }
+      }
+    }
+    this.draftSaveStatus = null;
+    if (this.resultTableCallback) {
+      this.resultTableCallback(this.exportedData);
+    }
+    this.didUpdate();
+  }
+
+  renderFillHandle() {
+    if (!this.exportedData || (!this.activeCell && !this.selectionRange)) return;
+    const targetRow = this.selectionRange ? Math.max(this.selectionRange.startRow, this.selectionRange.endRow) : this.activeCell.r;
+    const targetCol = this.selectionRange ? Math.max(this.selectionRange.startCol, this.selectionRange.endCol) : this.activeCell.c;
+
+    const scroller = document.querySelector(".scrolltable-scrolled") || document;
+    scroller.querySelectorAll(".excel-fill-handle").forEach(h => h.remove());
+
+    const targetTd = Array.from(scroller.querySelectorAll(".scrolltable-cell")).find(
+      td => td._rowIndex === targetRow && td._colIndex === targetCol
+    );
+
+    if (targetTd && !targetTd.classList.contains("cell-editing")) {
+      const handle = document.createElement("div");
+      handle.className = "excel-fill-handle";
+      handle.title = "Drag to fill / Double-click to fill down";
+
+      const originR = this.activeCell ? this.activeCell.r : targetRow;
+      const originC = this.activeCell ? this.activeCell.c : targetCol;
+      const rowData = this.exportedData.table[originR];
+      const record = rowData ? rowData[0] : null;
+      const header = this.exportedData.table[0];
+      const colName = header ? header[originC] : "";
+      const sObjectType = record?.attributes?.type || this.detectSObjectType();
+      const key = `${record?.Id}:${colName}`;
+      const currentVal = this.draftEdits.has(key) ? this.draftEdits.get(key).draftValue : (rowData ? rowData[originC] : "");
+
+      handle.addEventListener("mousedown", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        this.startFillHandleDrag(originR, originC, currentVal, record?.Id, colName, sObjectType);
+      });
+      handle.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        this.fillColumnToEdge("down");
+      });
+      targetTd.appendChild(handle);
+    }
+  }
+
+  setActiveCell(r, c) {
+    this.activeCell = { r, c };
+    this.selectionRange = { startRow: r, endRow: r, startCol: c, endCol: c };
+    this.lastActiveClickCell = { r, c };
+
+    const scroller = document.querySelector(".scrolltable-scrolled") || document;
+    scroller.querySelectorAll(".scrolltable-cell").forEach(td => {
+      const row = td._rowIndex;
+      const col = td._colIndex;
+      if (row === r && col === c) {
+        td.classList.add("cell-active");
+        td.classList.remove("cell-selected");
+      } else {
+        td.classList.remove("cell-active");
+        td.classList.remove("cell-selected");
+      }
+    });
+
+    this.renderFillHandle();
+  }
+
+  isCellInSelection(r, c) {
+    if (!this.selectionRange) return false;
+    const minR = Math.min(this.selectionRange.startRow, this.selectionRange.endRow);
+    const maxR = Math.max(this.selectionRange.startRow, this.selectionRange.endRow);
+    const minC = Math.min(this.selectionRange.startCol, this.selectionRange.endCol);
+    const maxC = Math.max(this.selectionRange.startCol, this.selectionRange.endCol);
+    return r >= minR && r <= maxR && c >= minC && c <= maxC;
+  }
+
+  updateSelectionRange(r, c) {
+    if (!this.activeCell) return;
+    this.selectionRange = {
+      startRow: this.activeCell.r,
+      endRow: r,
+      startCol: this.activeCell.c,
+      endCol: c
+    };
+
+    const scroller = document.querySelector(".scrolltable-scrolled") || document;
+    scroller.querySelectorAll(".scrolltable-cell").forEach(td => {
+      const row = td._rowIndex;
+      const col = td._colIndex;
+      if (row === undefined || col === undefined) return;
+      if (row === this.activeCell.r && col === this.activeCell.c) {
+        td.classList.add("cell-active");
+      } else if (this.isCellInSelection(row, col)) {
+        td.classList.add("cell-selected");
+      } else {
+        td.classList.remove("cell-selected");
+      }
+    });
+
+    this.renderFillHandle();
+  }
+
+  startFillHandleDrag(r, c, value, recordId, fieldName, sObjectType) {
+    this.isDraggingFillHandle = true;
+    this.fillHandleOrigin = { r, c, value, recordId, fieldName, sObjectType };
+    this.fillDragTargetRow = r;
+  }
+
+  updateFillDragTarget(targetRow) {
+    if (!this.isDraggingFillHandle || !this.fillHandleOrigin || this.fillDragTargetRow === targetRow) return;
+    this.fillDragTargetRow = targetRow;
+    const minR = Math.min(this.fillHandleOrigin.r, targetRow);
+    const maxR = Math.max(this.fillHandleOrigin.r, targetRow);
+    const colIdx = this.fillHandleOrigin.c;
+
+    const scroller = document.querySelector(".scrolltable-scrolled") || document;
+    scroller.querySelectorAll(".scrolltable-cell").forEach(td => {
+      const r = td._rowIndex;
+      const c = td._colIndex;
+      if (c === colIdx && r >= minR && r <= maxR) {
+        td.classList.add("cell-fill-preview");
+      } else {
+        td.classList.remove("cell-fill-preview");
+      }
+    });
+  }
+
+  finishFillHandleDrag() {
+    if (!this.isDraggingFillHandle) return;
+    const origin = this.fillHandleOrigin;
+    const targetRow = this.fillDragTargetRow;
+    this.isDraggingFillHandle = false;
+    this.fillHandleOrigin = null;
+    this.fillDragTargetRow = null;
+
+    const scroller = document.querySelector(".scrolltable-scrolled") || document;
+    scroller.querySelectorAll(".cell-fill-preview").forEach(td => td.classList.remove("cell-fill-preview"));
+
+    if (!origin || targetRow === null || targetRow === undefined || targetRow === origin.r) {
+      this.didUpdate();
+      return;
+    }
+
+    const minR = Math.min(origin.r, targetRow);
+    const maxR = Math.max(origin.r, targetRow);
+    const c = origin.c;
+    const colName = origin.fieldName;
+    const fillVal = origin.value;
+
+    const undoItems = [];
+    for (let r = minR; r <= maxR; r++) {
+      if (r === origin.r) continue;
+      const row = this.exportedData ? this.exportedData.table[r] : null;
+      if (!row) continue;
+      const record = row[0];
+      if (!record || !record.Id) continue;
+
+      const key = `${record.Id}:${colName}`;
+      if (!this.originalCellValues.has(key)) {
+        this.originalCellValues.set(key, row[c]);
+      }
+      const origVal = this.originalCellValues.get(key);
+      const prevDraft = this.draftEdits.get(key);
+      undoItems.push({
+        recordId: record.Id,
+        fieldName: colName,
+        r,
+        c,
+        sObjectType: origin.sObjectType,
+        originalValue: origVal,
+        previousDraftInfo: prevDraft ? { ...prevDraft } : null
+      });
+      this.setDraftEdit(record.Id, colName, origin.sObjectType, r, c, origVal, fillVal);
+    }
+
+    if (undoItems.length > 0) {
+      this.pushUndoAction(undoItems);
+    }
+
+    if (this.resultTableCallback) {
+      this.resultTableCallback(this.exportedData);
+    }
+    this.didUpdate();
+  }
+
+  fillColumnToEdge(direction = "down") {
+    if (!this.activeCell || !this.exportedData || !this.exportedData.table) return;
+    const originR = this.activeCell.r;
+    const c = this.activeCell.c;
+    const headerRow = this.exportedData.table[0];
+    if (!headerRow) return;
+    const colName = headerRow[c];
+    if (!colName || colName === "Id" || colName.includes(".")) return;
+
+    const sourceRow = this.exportedData.table[originR];
+    if (!sourceRow) return;
+    const sourceRecord = sourceRow[0];
+    if (!sourceRecord || !sourceRecord.Id) return;
+
+    const sourceKey = `${sourceRecord.Id}:${colName}`;
+    const fillVal = this.draftEdits.has(sourceKey) ? this.draftEdits.get(sourceKey).draftValue : sourceRow[c];
+    const sObjectType = sourceRecord.attributes?.type || this.detectSObjectType();
+
+    const startR = direction === "down" ? originR + 1 : 1;
+    const endR = direction === "down" ? this.exportedData.table.length - 1 : originR - 1;
+
+    const undoItems = [];
+    for (let r = startR; r <= endR; r++) {
+      const row = this.exportedData.table[r];
+      if (!row) continue;
+      const record = row[0];
+      if (!record || !record.Id) continue;
+
+      const key = `${record.Id}:${colName}`;
+      if (!this.originalCellValues.has(key)) {
+        this.originalCellValues.set(key, row[c]);
+      }
+      const origVal = this.originalCellValues.get(key);
+      const prevDraft = this.draftEdits.get(key);
+      undoItems.push({
+        recordId: record.Id,
+        fieldName: colName,
+        r,
+        c,
+        sObjectType,
+        originalValue: origVal,
+        previousDraftInfo: prevDraft ? { ...prevDraft } : null
+      });
+      this.setDraftEdit(record.Id, colName, sObjectType, r, c, origVal, fillVal);
+    }
+
+    if (undoItems.length > 0) {
+      this.pushUndoAction(undoItems);
+    }
+
+    if (this.resultTableCallback) {
+      this.resultTableCallback(this.exportedData);
+    }
+    this.didUpdate();
+  }
+
+  fillOneStep(direction = "down") {
+    if (!this.activeCell || !this.exportedData || !this.exportedData.table) return;
+    const currentR = this.activeCell.r;
+    const c = this.activeCell.c;
+    const headerRow = this.exportedData.table[0];
+    if (!headerRow) return;
+    const colName = headerRow[c];
+    if (!colName || colName === "Id" || colName.includes(".")) return;
+
+    const targetR = direction === "down" ? currentR + 1 : currentR - 1;
+    if (targetR < 1 || targetR >= this.exportedData.table.length) return;
+
+    const sourceRow = this.exportedData.table[currentR];
+    const targetRow = this.exportedData.table[targetR];
+    if (!sourceRow || !targetRow) return;
+
+    const sourceRecord = sourceRow[0];
+    const targetRecord = targetRow[0];
+    if (!sourceRecord || !targetRecord || !targetRecord.Id) return;
+
+    const sourceKey = `${sourceRecord.Id}:${colName}`;
+    const fillVal = this.draftEdits.has(sourceKey) ? this.draftEdits.get(sourceKey).draftValue : sourceRow[c];
+    const sObjectType = targetRecord.attributes?.type || this.detectSObjectType();
+
+    const targetKey = `${targetRecord.Id}:${colName}`;
+    if (!this.originalCellValues.has(targetKey)) {
+      this.originalCellValues.set(targetKey, targetRow[c]);
+    }
+    const origVal = this.originalCellValues.get(targetKey);
+    const prevDraft = this.draftEdits.get(targetKey);
+
+    this.pushUndoAction([{
+      recordId: targetRecord.Id,
+      fieldName: colName,
+      r: targetR,
+      c,
+      sObjectType,
+      originalValue: origVal,
+      previousDraftInfo: prevDraft ? { ...prevDraft } : null
+    }]);
+
+    this.setDraftEdit(targetRecord.Id, colName, sObjectType, targetR, c, origVal, fillVal);
+    this.setActiveCell(targetR, c);
+
+    if (this.resultTableCallback) {
+      this.resultTableCallback(this.exportedData);
+    }
+    this.didUpdate();
+  }
+
+  clearSelectedCells() {
+    if (!this.activeCell && !this.selectionRange) return;
+    if (!this.exportedData || !this.exportedData.table) return;
+
+    const headerRow = this.exportedData.table[0];
+    if (!headerRow) return;
+
+    const range = this.selectionRange || {
+      startRow: this.activeCell.r,
+      endRow: this.activeCell.r,
+      startCol: this.activeCell.c,
+      endCol: this.activeCell.c
+    };
+
+    const minR = Math.min(range.startRow, range.endRow);
+    const maxR = Math.max(range.startRow, range.endRow);
+    const minC = Math.min(range.startCol, range.endCol);
+    const maxC = Math.max(range.startCol, range.endCol);
+
+    const undoItems = [];
+    for (let r = minR; r <= maxR; r++) {
+      const row = this.exportedData.table[r];
+      if (!row) continue;
+      const record = row[0];
+      if (!record || !record.Id) continue;
+
+      for (let c = minC; c <= maxC; c++) {
+        const colName = headerRow[c];
+        if (!colName || colName === "Id" || colName.includes(".")) continue;
+
+        const key = `${record.Id}:${colName}`;
+        if (!this.originalCellValues.has(key)) {
+          this.originalCellValues.set(key, row[c]);
+        }
+        const origVal = this.originalCellValues.get(key);
+        const prevDraft = this.draftEdits.get(key);
+        undoItems.push({
+          recordId: record.Id,
+          fieldName: colName,
+          r,
+          c,
+          sObjectType: record.attributes?.type || this.detectSObjectType(),
+          originalValue: origVal,
+          previousDraftInfo: prevDraft ? { ...prevDraft } : null
+        });
+        this.setDraftEdit(record.Id, colName, record.attributes?.type || this.detectSObjectType(), r, c, origVal, "");
+      }
+    }
+
+    if (undoItems.length > 0) {
+      this.pushUndoAction(undoItems);
+    }
+
+    if (this.resultTableCallback) {
+      this.resultTableCallback(this.exportedData);
+    }
+    this.didUpdate();
+  }
+
+  editActiveCell() {
+    if (!this.activeCell) return;
+    const scroller = document.querySelector(".scrolltable-scrolled") || document;
+    const cell = Array.from(scroller.querySelectorAll(".scrolltable-cell")).find(
+      td => td._rowIndex === this.activeCell.r && td._colIndex === this.activeCell.c
+    );
+    if (cell && !cell.classList.contains("cell-editing")) {
+      const r = this.activeCell.r;
+      const c = this.activeCell.c;
+      const row = this.exportedData ? this.exportedData.table[r] : null;
+      const record = row ? row[0] : null;
+      const header = this.exportedData ? this.exportedData.table[0] : null;
+      const colName = header ? header[c] : "";
+      if (!record || !record.Id || !colName || colName === "Id" || colName.includes(".")) return;
+      const key = `${record.Id}:${colName}`;
+      const originalValue = this.originalCellValues.get(key);
+      const sObjectType = record.attributes?.type || this.detectSObjectType();
+      this.startEditingCell(cell, this.exportedData, r, c, record.Id, sObjectType, colName, originalValue);
+    }
+  }
+
+  startEditingCell(td, rt, r, c, recordId, sObjectType, fieldName, originalValue) {
+    if (td.classList.contains("cell-editing")) return;
+    td.classList.add("cell-editing");
+    this.isEditingAnyCell = true;
+    td.querySelectorAll(".excel-fill-handle").forEach(h => h.remove());
+
+    const key = `${recordId}:${fieldName}`;
+    const draftInfo = this.draftEdits.get(key);
+    const initialText = draftInfo ? (draftInfo.draftValue ?? "") : (originalValue !== null && originalValue !== undefined ? String(originalValue) : "");
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "scrolltable-cell-input";
+    input.value = initialText;
+
+    td.textContent = "";
+    td.appendChild(input);
+    input.focus();
+    input.select();
+
+    let committed = false;
+
+    const commit = () => {
+      if (committed) return;
+      committed = true;
+      this.isEditingAnyCell = false;
+      const prevDraft = this.draftEdits.get(key);
+      const val = input.value;
+      const origStr = originalValue !== null && originalValue !== undefined ? String(originalValue) : "";
+      if (val !== origStr) {
+        this.pushUndoAction([{
+          recordId,
+          fieldName,
+          r,
+          c,
+          sObjectType,
+          originalValue,
+          previousDraftInfo: prevDraft ? { ...prevDraft } : null
+        }]);
+        this.setDraftEdit(recordId, fieldName, sObjectType, r, c, originalValue, val);
+      } else {
+        if (prevDraft) {
+          this.pushUndoAction([{
+            recordId,
+            fieldName,
+            r,
+            c,
+            sObjectType,
+            originalValue,
+            previousDraftInfo: { ...prevDraft }
+          }]);
+        }
+        this.removeDraftEdit(recordId, fieldName, r, c);
+      }
+      td.classList.remove("cell-editing");
+      if (this.draftEdits.has(key)) {
+        td.textContent = val;
+        td.classList.add("cell-draft");
+        td.title = `Draft value (Original: ${origStr})`;
+      } else {
+        td.textContent = origStr;
+        td.classList.remove("cell-draft");
+        td.title = "Click to select / Double-click to edit";
+      }
+      this.setActiveCell(r, c);
+    };
+
+    const cancel = () => {
+      if (committed) return;
+      committed = true;
+      this.isEditingAnyCell = false;
+      td.classList.remove("cell-editing");
+      const currentVal = this.draftEdits.has(key) ? this.draftEdits.get(key).draftValue : originalValue;
+      td.textContent = currentVal !== null && currentVal !== undefined ? String(currentVal) : "";
+      if (this.draftEdits.has(key)) {
+        td.classList.add("cell-draft");
+      } else {
+        td.classList.remove("cell-draft");
+      }
+      this.setActiveCell(r, c);
+    };
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        commit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        cancel();
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "ArrowDown" || e.key === "Down" || e.code === "ArrowDown" || e.key === "ArrowUp" || e.key === "Up" || e.code === "ArrowUp")) {
+        e.preventDefault();
+        e.stopPropagation();
+        commit();
+        const isDown = e.key === "ArrowDown" || e.key === "Down" || e.code === "ArrowDown";
+        this.fillColumnToEdge(isDown ? "down" : "up");
+      } else if (!e.ctrlKey && !e.metaKey && e.shiftKey && (e.key === "ArrowDown" || e.key === "Down" || e.code === "ArrowDown")) {
+        e.preventDefault();
+        e.stopPropagation();
+        commit();
+        this.fillOneStep("down");
+      } else if (!e.ctrlKey && !e.metaKey && e.shiftKey && (e.key === "ArrowUp" || e.key === "Up" || e.code === "ArrowUp")) {
+        e.preventDefault();
+        e.stopPropagation();
+        commit();
+        this.fillOneStep("up");
+      }
+    });
+
+    input.addEventListener("blur", () => {
+      commit();
+    });
+  }
+
+  async saveDraftChanges() {
+    if (this.isSavingDrafts || this.draftEdits.size === 0) return;
+    this.isSavingDrafts = true;
+    this.draftSaveStatus = null;
+    this.didUpdate();
+
+    try {
+      const recordMap = new Map();
+      for (const edit of this.draftEdits.values()) {
+        if (!recordMap.has(edit.recordId)) {
+          recordMap.set(edit.recordId, {
+            recordId: edit.recordId,
+            sObjectType: edit.sObjectType || this.detectSObjectType(),
+            fields: {},
+            edits: []
+          });
+        }
+        const rec = recordMap.get(edit.recordId);
+        let val = edit.draftValue;
+        if (val === "") {
+          val = null;
+        } else if (typeof edit.originalValue === "number" && !isNaN(Number(val))) {
+          val = Number(val);
+        } else if (typeof edit.originalValue === "boolean") {
+          val = val === "true";
+        }
+        rec.fields[edit.fieldName] = val;
+        rec.edits.push(edit);
+      }
+
+      const allRecords = Array.from(recordMap.values());
+      let successCount = 0;
+      let errorMessages = [];
+      const batchSize = 200;
+
+      for (let i = 0; i < allRecords.length; i += batchSize) {
+        const batch = allRecords.slice(i, i + batchSize);
+        const payload = {
+          allOrNone: false,
+          records: batch.map(r => ({
+            attributes: { type: r.sObjectType },
+            Id: r.recordId,
+            ...r.fields
+          }))
+        };
+
+        const res = await sfConn.rest(`/services/data/v${apiVersion}/composite/sobjects`, {
+          method: "PATCH",
+          body: payload
+        });
+
+        if (Array.isArray(res)) {
+          res.forEach((item, idx) => {
+            const originalRec = batch[idx];
+            if (item.success) {
+              successCount++;
+              for (const edit of originalRec.edits) {
+                const key = `${edit.recordId}:${edit.fieldName}`;
+                this.originalCellValues.set(key, edit.draftValue);
+                this.draftEdits.delete(key);
+              }
+            } else {
+              const err = item.errors && item.errors[0] ? item.errors[0].message : "Unknown error";
+              errorMessages.push(`Record ${originalRec.recordId}: ${err}`);
+            }
+          });
+        }
+      }
+
+      if (errorMessages.length > 0) {
+        this.draftSaveStatus = {
+          type: "error",
+          message: `Saved ${successCount} record(s). ${errorMessages.length} failed: ${errorMessages[0]}`
+        };
+      } else {
+        this.draftSaveStatus = {
+          type: "success",
+          message: `Saved ${successCount} record(s) successfully.`
+        };
+        setTimeout(() => {
+          if (this.draftSaveStatus && this.draftSaveStatus.type === "success") {
+            this.draftSaveStatus = null;
+            this.didUpdate();
+          }
+        }, 4000);
+      }
+    } catch (err) {
+      console.error("Error saving draft changes:", err);
+      this.draftSaveStatus = {
+        type: "error",
+        message: "Save failed: " + (err.message || String(err))
+      };
+    } finally {
+      this.isSavingDrafts = false;
+      if (this.resultTableCallback) {
+        this.resultTableCallback(this.exportedData);
+      }
+      this.didUpdate();
+    }
+  }
 }
 
 function RecordTable(vm) {
@@ -1342,6 +2048,125 @@ function RecordTable(vm) {
 
       }
       if (vm.prefHideRelations) { return rt.filterColumns(rt.table, rt.colVisibilities); } else { return rt.table; }
+    },
+    onCellRendered(tableData, cell, td, r, c) {
+      if (r === undefined || r === 0) return; // Header row
+      if (c === undefined || c === 0) return; // "_" column
+      let headerRow = rt.table[0];
+      if (!headerRow) return;
+      let colName = headerRow[c];
+      if (!colName || colName === "Id" || colName.includes(".")) {
+        return; // Only direct fields except Id are editable
+      }
+      let row = rt.table[r];
+      if (!row) return;
+      let record = row[0];
+      if (!record || !record.Id) {
+        return; // Needs an Id to be saved
+      }
+
+      td._rowIndex = r;
+      td._colIndex = c;
+
+      let recordId = record.Id;
+      let sObjectType = record.attributes?.type || vm.detectSObjectType();
+      let key = `${recordId}:${colName}`;
+
+      // Initialize original value if not yet tracked
+      if (!vm.originalCellValues.has(key)) {
+        vm.originalCellValues.set(key, cell);
+      }
+      let originalValue = vm.originalCellValues.get(key);
+
+      // Check if this cell is currently in draft mode
+      let draftInfo = vm.draftEdits.get(key);
+      if (draftInfo) {
+        td.textContent = draftInfo.draftValue === null ? "" : String(draftInfo.draftValue);
+        td.classList.add("cell-draft");
+        td.title = `Draft: ${draftInfo.draftValue ?? ""} (Original: ${originalValue ?? ""})`;
+      } else {
+        td.classList.remove("cell-draft");
+        td.title = "Click to select / Double-click to edit";
+      }
+
+      // Active cell & selection styling
+      const isActive = vm.activeCell && vm.activeCell.r === r && vm.activeCell.c === c;
+      const isSelected = vm.isCellInSelection(r, c);
+
+      if (isActive) {
+        td.classList.add("cell-active");
+      } else {
+        td.classList.remove("cell-active");
+      }
+
+      if (isSelected && !isActive) {
+        td.classList.add("cell-selected");
+      } else if (!isActive) {
+        td.classList.remove("cell-selected");
+      }
+
+      // Check if this cell is the bottom-right corner of selection or active cell
+      const targetHandleRow = vm.selectionRange ? Math.max(vm.selectionRange.startRow, vm.selectionRange.endRow) : (vm.activeCell ? vm.activeCell.r : null);
+      const targetHandleCol = vm.selectionRange ? Math.max(vm.selectionRange.startCol, vm.selectionRange.endCol) : (vm.activeCell ? vm.activeCell.c : null);
+      const isHandleCell = targetHandleRow === r && targetHandleCol === c;
+
+      td.querySelectorAll(".excel-fill-handle").forEach(h => h.remove());
+
+      if (isHandleCell && !td.classList.contains("cell-editing")) {
+        const handle = document.createElement("div");
+        handle.className = "excel-fill-handle";
+        handle.title = "Drag to fill / Double-click to fill down";
+        const originR = vm.activeCell ? vm.activeCell.r : r;
+        const originC = vm.activeCell ? vm.activeCell.c : c;
+        const originRow = rt.table[originR];
+        const originRecord = originRow ? originRow[0] : null;
+        const originKey = `${originRecord?.Id}:${colName}`;
+        const currentVal = vm.draftEdits.has(originKey) ? vm.draftEdits.get(originKey).draftValue : (originRow ? originRow[originC] : "");
+
+        handle.addEventListener("mousedown", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          vm.startFillHandleDrag(originR, originC, currentVal, originRecord?.Id, colName, sObjectType);
+        });
+        handle.addEventListener("dblclick", (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          vm.fillColumnToEdge("down");
+        });
+        td.appendChild(handle);
+      }
+
+      td.classList.add("editable-cell");
+
+      td.onmousedown = (e) => {
+        if (e.target.classList.contains("excel-fill-handle") || td.classList.contains("cell-editing") || e.target.tagName === "A") return;
+        if (e.button === 0) {
+          vm.setActiveCell(r, c);
+          vm.isDraggingSelection = true;
+        }
+      };
+
+      td.onmouseenter = () => {
+        if (vm.isDraggingFillHandle) {
+          vm.updateFillDragTarget(r);
+        } else if (vm.isDraggingSelection) {
+          vm.updateSelectionRange(r, c);
+        }
+      };
+
+      td.onclick = (e) => {
+        if (e.target.tagName === "A" || e.target.classList.contains("excel-fill-handle") || td.classList.contains("cell-editing")) return;
+        if (vm.lastActiveClickCell && vm.lastActiveClickCell.r === r && vm.lastActiveClickCell.c === c) {
+          vm.startEditingCell(td, rt, r, c, recordId, sObjectType, colName, originalValue);
+        } else {
+          vm.lastActiveClickCell = { r, c };
+        }
+      };
+
+      td.ondblclick = (e) => {
+        if (e.target.tagName === "A" || e.target.classList.contains("excel-fill-handle") || td.classList.contains("cell-editing")) return;
+        vm.startEditingCell(td, rt, r, c, recordId, sObjectType, colName, originalValue);
+      };
     }
   };
   return rt;
@@ -1797,6 +2622,41 @@ class App extends React.Component {
         e.preventDefault();
         model.doExport();
         model.didUpdate();
+      } else {
+        const isInputField = document.activeElement && (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA");
+        if (!isInputField && !model.isEditingAnyCell && model.exportedData) {
+          if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z" || e.code === "KeyZ") && !e.shiftKey) {
+            e.preventDefault();
+            model.undo();
+            return;
+          }
+          const isArrowDown = e.key === "ArrowDown" || e.key === "Down" || e.code === "ArrowDown";
+          const isArrowUp = e.key === "ArrowUp" || e.key === "Up" || e.code === "ArrowUp";
+          if ((e.ctrlKey || e.metaKey) && e.shiftKey && (isArrowDown || isArrowUp)) {
+            e.preventDefault();
+            model.fillColumnToEdge(isArrowDown ? "down" : "up");
+          } else if (!e.ctrlKey && !e.metaKey && e.shiftKey && (isArrowDown || isArrowUp)) {
+            e.preventDefault();
+            model.fillOneStep(isArrowDown ? "down" : "up");
+          } else if (e.key === "Delete" || e.key === "Backspace") {
+            if (model.activeCell || model.selectionRange) {
+              e.preventDefault();
+              model.clearSelectedCells();
+            }
+          } else if (e.key === "Enter" && model.activeCell) {
+            e.preventDefault();
+            model.editActiveCell();
+          }
+        }
+      }
+    });
+
+    addEventListener("mouseup", () => {
+      if (model.isDraggingFillHandle) {
+        model.finishFillHandleDrag();
+      }
+      if (model.isDraggingSelection) {
+        model.isDraggingSelection = false;
       }
     });
 
@@ -2125,6 +2985,24 @@ class App extends React.Component {
                 isOptionEnabled("delete", this.state.hideButtonsOption)
                   ? h("button", {className: "slds-button slds-button_destructive delete-btn", disabled: !model.canDelete(), onClick: this.onDeleteRecords, title: "Open the 'Data Import' page with preloaded records to delete (< 20k records). 'Id' field needs to be queried"}, "Delete Records") : null,
               ),
+              model.draftEdits && model.draftEdits.size > 0 ? h("div", {className: "slds-button-group slds-m-left_small"},
+                h("button", {
+                  className: "slds-button slds-button_success",
+                  style: {backgroundColor: "#2e844a", borderColor: "#2e844a", color: "#ffffff", fontWeight: "600"},
+                  disabled: model.isSavingDrafts,
+                  onClick: () => model.saveDraftChanges(),
+                  title: "Save all draft changes to Salesforce"
+                }, model.isSavingDrafts ? "Saving..." : `Save Changes (${model.getDraftRecordCount()})`),
+                h("button", {
+                  className: "slds-button slds-button_neutral",
+                  disabled: model.isSavingDrafts,
+                  onClick: () => model.discardAllDrafts(),
+                  title: "Discard all draft changes"
+                }, "Discard")
+              ) : null,
+              model.draftSaveStatus ? h("span", {
+                className: `slds-badge slds-theme_${model.draftSaveStatus.type === "success" ? "success" : "error"} slds-m-left_small`
+              }, model.draftSaveStatus.message) : null,
               model.exportedData && model.exportedData.table[0]?.length > 0 && !model.exportError ? h("div", {className: "slds-form-element"},
                 h("div", {className: "slds-form-element__control slds-input-has-icon slds-input-has-icon_left slds-m-left_small slds-button-group"},
                   h("input", {
