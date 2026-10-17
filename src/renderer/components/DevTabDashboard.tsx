@@ -64,7 +64,7 @@ export function DevTabDashboard({ orgTab }: DevTabDashboardProps) {
 
   const setupShortcuts = [
     { label: "Object Manager", path: "/lightning/setup/ObjectManager/home", icon: "📦" },
-    { label: "Flows", path: "/lightning/setup/Flows/home", icon: "⚡" },
+    { label: "Flows", path: "/lightning/o/FlowRecord/list?filterName=All_FlowRecords", icon: "⚡" },
     { label: "Apex Classes", path: "/lightning/setup/ApexClasses/home", icon: "📄" },
     { label: "Users", path: "/lightning/setup/ManageUsers/home", icon: "👤" },
     { label: "Custom Metadata", path: "/lightning/setup/CustomMetadata/home", icon: "🏷️" },

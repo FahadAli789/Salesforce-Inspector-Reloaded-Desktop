@@ -62,6 +62,7 @@ export function AddOrgModal({ isOpen, onClose, onOrgConnected }: AddOrgModalProp
     }
     setBusy(true);
     setError(null);
+    try {
       const cleanHost = normalizeSfHost(sfHost);
       const org = await electronApi.loginWithManualSession({
         alias: manualAlias,

@@ -42,6 +42,30 @@
     }
   }
 
+  function rewriteSfUrlToLocalProxy(urlStr) {
+    if (!urlStr || typeof urlStr !== "string") return urlStr;
+    if (urlStr.startsWith("/sf-proxy/")) return urlStr;
+    try {
+      const parsed = new URL(urlStr, window.location.origin);
+      const host = parsed.hostname.toLowerCase();
+      const isSfDomain =
+        host.endsWith(".salesforce.com") ||
+        host.endsWith(".force.com") ||
+        host.endsWith(".cloudforce.com") ||
+        host.endsWith(".visualforce.com") ||
+        parsed.pathname.startsWith("/services/");
+
+      if (
+        (parsed.protocol === "https:" || parsed.protocol === "http:") &&
+        host !== window.location.hostname &&
+        isSfDomain
+      ) {
+        return `${window.location.origin}/sf-proxy/${parsed.hostname}${parsed.pathname}${parsed.search}`;
+      }
+    } catch (e) {}
+    return urlStr;
+  }
+
   function getElectronApi() {
     if (window.electronApi) return window.electronApi;
     try {
@@ -488,13 +512,14 @@
       }
 
       open(method, url, async = true, user, password) {
+        const proxiedUrl = rewriteSfUrlToLocalProxy(url ? url.toString() : "");
         this._method = method;
-        this._url = url;
+        this._url = proxiedUrl;
         this._async = async;
         this._user = user;
         this._password = password;
         this._headers = [];
-        return this._real.open(method, url, async, user, password);
+        return this._real.open(method, proxiedUrl, async, user, password);
       }
 
       setRequestHeader(name, value) {
@@ -747,7 +772,13 @@
     if (!origFetch || origFetch.__isShimmed) return;
 
     const shimmedFetch = async function (resource, init) {
-      let response = await origFetch.call(this, resource, init);
+      const proxiedResource =
+        typeof resource === "string"
+          ? rewriteSfUrlToLocalProxy(resource)
+          : resource instanceof URL
+          ? rewriteSfUrlToLocalProxy(resource.toString())
+          : resource;
+      let response = await origFetch.call(this, proxiedResource, init);
       if (response.status === 401) {
         console.warn("[chrome-shim] fetch returned 401, auto-refreshing session...");
         const refreshed = await performSessionRefresh();
@@ -785,7 +816,7 @@
           }
 
           newInit.headers = newHeaders;
-          return origFetch.call(this, resource, newInit);
+          return origFetch.call(this, proxiedResource, newInit);
         }
       }
       return response;

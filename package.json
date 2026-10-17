@@ -2,11 +2,10 @@
   "name": "salesforce-inspector-reloaded-desktop",
   "version": "2.1.0",
   "description": "Salesforce Inspector Reloaded Desktop – Standalone desktop application for Salesforce configuration, debugging, and productivity.",
-  "main": "out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
-    "preview": "electron-vite preview",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "eslint": "eslint .",
     "firefox-release-build": "node scripts/release-build.js firefox",
     "chrome-release-build": "node scripts/release-build.js chrome",
@@ -18,7 +17,6 @@
     "chrome-beta-build": "ENVIRONMENT_TYPE=BETA node scripts/release-build.js chrome"
   },
   "dependencies": {
-    "electron-updater": "^6.1.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -30,8 +28,6 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
-    "electron": "^33.2.0",
-    "electron-vite": "^2.3.0",
     "eslint": "^9.14.0",
     "eslint-plugin-react": "^7.37.2",
     "fs-extra": "11.2.0",

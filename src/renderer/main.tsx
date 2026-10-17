@@ -1,4 +1,5 @@
-// ── Polyfills & globals – must be the very first two imports ────────────────
+// ── Polyfills, globals & web bridge – must be the very first imports ────────
+import "./services/web-api-bridge";
 import "./setup-globals";
 import "./polyfills/chrome-shim";
 // ────────────────────────────────────────────────────────────────────────────

@@ -2,17 +2,18 @@
  * src/main/auth/oauth-service.ts
  *
  * OAuth 2.0 PKCE login flow and manual session import for Salesforce.
+ * Pure Node.js implementation without Electron dependencies.
  *
- * Key design choices:
+ * Key features:
  *  - PKCE S256 challenge/verifier generated fresh for every login attempt.
- *  - The OAuth modal window uses an isolated session partition so multiple
- *    orgs / logins never share browser cookies or cache.
- *  - The redirect is intercepted at the Electron layer (will-redirect /
- *    will-navigate) so we do NOT need a local HTTP listener on port 1717.
- *  - Refresh tokens are stored only in session-vault and never leave main.
+ *  - Temporary local HTTP server on 127.0.0.1:1717 intercepts the OAuth redirect.
+ *  - Launches OS default browser to authenticate.
+ *  - 3-minute timeout with graceful cleanup.
+ *  - Native Node fetch() for token exchanges and identity queries.
+ *  - Refresh tokens stored encrypted in ~/.sfir-desktop/org-vault.json.
  */
 
-import { BrowserWindow, net } from "electron";
+import * as http from "http";
 import * as crypto from "crypto";
 import { exec } from "child_process";
 import { promisify } from "util";
@@ -33,6 +34,28 @@ const execAsync = promisify(exec);
 const DEFAULT_CLIENT_ID = "PlatformCLI";
 const REDIRECT_URI = "http://localhost:1717/OauthRedirect";
 
+// ── Cross-platform OS browser launcher ───────────────────────────────────────
+
+export function openExternalInOs(url: string): Promise<void> {
+  return new Promise((resolve) => {
+    const platform = process.platform;
+    let cmd = "";
+    if (platform === "win32") {
+      cmd = `start "" "${url}"`;
+    } else if (platform === "darwin") {
+      cmd = `open "${url}"`;
+    } else {
+      cmd = `xdg-open "${url}"`;
+    }
+    exec(cmd, (err) => {
+      if (err) {
+        console.error("[openExternalInOs] Failed to open URL:", err);
+      }
+      resolve();
+    });
+  });
+}
+
 // ── PKCE helpers ─────────────────────────────────────────────────────────────
 
 function generateCodeVerifier(): string {
@@ -43,76 +66,66 @@ function generateCodeChallenge(verifier: string): string {
   return crypto.createHash("sha256").update(verifier).digest("base64url");
 }
 
-// ── HTTP helper (uses Electron's net module to respect proxy settings) ────────
+// ── HTTP helpers using native Node fetch ──────────────────────────────────────
 
 async function httpPost(
   url: string,
   body: Record<string, string>
 ): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    const request = net.request({
-      method: "POST",
-      url,
-    });
-
-    request.setHeader("Content-Type", "application/x-www-form-urlencoded");
-    request.setHeader("Accept", "application/json");
-
-    const bodyStr = new URLSearchParams(body).toString();
-
-    request.on("response", (response) => {
-      let data = "";
-      response.on("data", (chunk) => (data += chunk.toString()));
-      response.on("end", () => {
-        try {
-          const json = JSON.parse(data);
-          if (response.statusCode && response.statusCode >= 400) {
-            reject(
-              new Error(
-                `Token endpoint returned ${response.statusCode}: ${json.error_description ?? json.error ?? data}`
-              )
-            );
-          } else {
-            resolve(json);
-          }
-        } catch {
-          reject(new Error(`Failed to parse token response: ${data}`));
-        }
-      });
-      response.on("error", reject);
-    });
-
-    request.on("error", reject);
-    request.write(bodyStr);
-    request.end();
+  const bodyStr = new URLSearchParams(body).toString();
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body: bodyStr,
   });
+
+  const text = await res.text();
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`Failed to parse token response: ${text}`);
+  }
+
+  if (!res.ok) {
+    throw new Error(
+      `Token endpoint returned ${res.status}: ${json.error_description ?? json.error ?? text}`
+    );
+  }
+
+  return json;
 }
 
 async function httpGet(
   url: string,
   accessToken: string
 ): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    const request = net.request({ method: "GET", url });
-    request.setHeader("Authorization", `Bearer ${accessToken}`);
-    request.setHeader("Accept", "application/json");
-
-    request.on("response", (response) => {
-      let data = "";
-      response.on("data", (chunk) => (data += chunk.toString()));
-      response.on("end", () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          reject(new Error(`Failed to parse response: ${data}`));
-        }
-      });
-      response.on("error", reject);
-    });
-
-    request.on("error", reject);
-    request.end();
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+    },
   });
+
+  const text = await res.text();
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`Failed to parse response: ${text}`);
+  }
+
+  if (!res.ok) {
+    throw new Error(
+      `Request returned ${res.status}: ${json.error_description ?? json.error ?? text}`
+    );
+  }
+
+  return json;
 }
 
 // ── OAuth PKCE login ─────────────────────────────────────────────────────────
@@ -144,9 +157,8 @@ export async function loginWithOAuth(
   const challenge = generateCodeChallenge(verifier);
 
   // Build the authorisation URL
-  // NOTE: Do NOT set 'scope' (e.g. 'openid' or 'web'). Omitting 'scope' allows
-  // Salesforce to automatically assign all scopes configured on the Connected App
-  // (including refresh_token and api) without throwing OAUTH_APPROVAL_ERROR_GENERIC.
+  // Omitting 'scope' allows Salesforce to automatically assign all scopes
+  // configured on the Connected App (including refresh_token and api).
   const authUrl = new URL(`${loginUrl}/services/oauth2/authorize`);
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("client_id", clientId);
@@ -155,62 +167,118 @@ export async function loginWithOAuth(
   authUrl.searchParams.set("code_challenge_method", "S256");
   authUrl.searchParams.set("prompt", "login");
 
-  // Open a modal OAuth window with an isolated session partition so separate
-  // org logins never bleed into each other.
-  const partition = `persist:oauth-${Date.now()}`;
-
-  const oauthWin = new BrowserWindow({
-    width: 900,
-    height: 700,
-    modal: true,
-    show: true,
-    webPreferences: {
-      partition,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-    title: `Login – ${alias}`,
-  });
-
+  // Spin up temporary local HTTP listener on port 1717
   const code = await new Promise<string>((resolve, reject) => {
-    // Intercept both navigation and redirect events so we never actually
-    // let the browser try to open localhost:1717.
-    const interceptUrl = (url: string): boolean => {
-      if (url.startsWith(REDIRECT_URI)) {
-        const parsed = new URL(url);
-        const authCode = parsed.searchParams.get("code");
-        const error = parsed.searchParams.get("error");
+    let server: http.Server | null = null;
+    let timeoutTimer: NodeJS.Timeout | null = null;
+    let cleanedUp = false;
 
-        if (authCode) {
-          resolve(authCode);
-        } else {
-          reject(
-            new Error(
-              `OAuth error: ${error ?? "unknown"} – ${parsed.searchParams.get("error_description") ?? ""}`
-            )
-          );
-        }
-
-        oauthWin.close();
-        return true; // handled
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
       }
-      return false;
+      if (server) {
+        try {
+          server.close();
+        } catch {}
+        server = null;
+      }
     };
 
-    oauthWin.webContents.on("will-navigate", (_event, url) => {
-      interceptUrl(url);
+    server = http.createServer((req, res) => {
+      try {
+        const reqUrl = req.url || "";
+        if (reqUrl.startsWith("/OauthRedirect")) {
+          const parsed = new URL(reqUrl, "http://localhost:1717");
+          const authCode = parsed.searchParams.get("code");
+          const error = parsed.searchParams.get("error");
+          const errorDesc = parsed.searchParams.get("error_description");
+
+          res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8",
+            Connection: "close",
+          });
+          res.end(
+            `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Authentication Successful</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        margin: 0;
+        background-color: #0f172a;
+        color: #f8fafc;
+      }
+      .card {
+        text-align: center;
+        background: #1e293b;
+        padding: 36px 48px;
+        border-radius: 12px;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+        border: 1px solid #334155;
+      }
+      h2 { color: #38bdf8; margin: 0 0 12px; }
+      p { color: #94a3b8; margin: 0; font-size: 15px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Authentication Successful!</h2>
+      <p>You can close this tab and return to Salesforce Inspector Reloaded.</p>
+    </div>
+    <script>
+      setTimeout(() => { window.close(); }, 1500);
+    </script>
+  </body>
+</html>`
+          );
+
+          cleanup();
+
+          if (authCode) {
+            resolve(authCode);
+          } else {
+            reject(
+              new Error(
+                `OAuth error: ${error ?? "unknown"} – ${errorDesc ?? ""}`
+              )
+            );
+          }
+          return;
+        }
+
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Not Found");
+      } catch (e) {
+        cleanup();
+        reject(e);
+      }
     });
 
-    oauthWin.webContents.on("will-redirect", (_event, url) => {
-      interceptUrl(url);
+    server.on("error", (err: any) => {
+      cleanup();
+      reject(new Error(`Failed to bind OAuth listener on port 1717: ${err.message}`));
     });
 
-    oauthWin.on("closed", () => {
-      reject(new Error("OAuth window was closed before login completed."));
-    });
+    // 3-minute timeout
+    timeoutTimer = setTimeout(() => {
+      cleanup();
+      reject(new Error("OAuth login timed out after 3 minutes."));
+    }, 180000);
 
-    oauthWin.loadURL(authUrl.toString()).catch(reject);
+    server.listen(1717, "127.0.0.1", () => {
+      console.log(`[oauth-service] Temporary listener active on http://127.0.0.1:1717. Opening browser...`);
+      openExternalInOs(authUrl.toString());
+    });
   });
 
   // Exchange authorisation code for tokens
@@ -231,19 +299,21 @@ export async function loginWithOAuth(
   const idUrl = tokenResponse.id as string;
 
   // Derive orgId from the ID URL: https://login.salesforce.com/id/<orgId>/<userId>
-  const idParts = idUrl.split("/");
-  const orgId = idParts[idParts.length - 2] ?? "unknown";
+  const idParts = idUrl ? idUrl.split("/") : [];
+  const orgId = idParts.length >= 2 ? idParts[idParts.length - 2] : "unknown";
 
   // Fetch username
   let username: string | undefined;
-  try {
-    const idInfo = await httpGet(idUrl, accessToken);
-    username = idInfo.username as string;
-  } catch {
-    // Non-fatal
+  if (idUrl) {
+    try {
+      const idInfo = await httpGet(idUrl, accessToken);
+      username = idInfo.username as string;
+    } catch {
+      // Non-fatal
+    }
   }
 
-  const sfHost = normalizeSfHost(instanceUrl);
+  const sfHost = normalizeSfHost(instanceUrl || loginUrl);
 
   const profile: OrgProfile = {
     orgId,
@@ -442,10 +512,9 @@ export async function loginWithManualSession(
   const { sfHost: rawHost, sessionId, alias, orgType, color = "#6B7280" } = opts;
   const sfHost = normalizeSfHost(rawHost);
 
-  // Verify the session is alive and discover the org ID by calling /services/data
+  // Verify the session is alive and discover the org ID by calling /services/oauth2/userinfo or /services/data
   const instanceUrl = `https://${sfHost}`;
 
-  // Get the identity URL to extract orgId and username
   let orgId = `manual-${sfHost}`;
   let username: string | undefined;
   let loginUrl = `https://login.salesforce.com`;
@@ -456,7 +525,7 @@ export async function loginWithManualSession(
       sessionId
     );
     orgId = (idResponse.organization_id as string) ?? orgId;
-    username = idResponse.preferred_username as string | undefined;
+    username = (idResponse.preferred_username as string) ?? (idResponse.username as string);
   } catch {
     // If /userinfo fails, try /services/data just to check session validity
     try {

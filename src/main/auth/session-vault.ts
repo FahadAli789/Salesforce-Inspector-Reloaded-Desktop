@@ -1,12 +1,12 @@
 /**
  * src/main/auth/session-vault.ts
  *
- * Encrypted on-disk session vault.
+ * Encrypted on-disk session vault using Node.js crypto (AES-256-GCM).
  *
- * Tokens are encrypted with Electron's safeStorage (OS keychain / libsecret /
- * kwallet) before being written to disk. The file at `org-vault.json` only ever
- * contains cipher-text for the token fields; profiles are stored in plaintext
- * because they contain no secrets.
+ * Tokens are encrypted with a local 256-bit symmetric key stored in ~/.sfir-desktop/.vault-key
+ * before being written to disk at ~/.sfir-desktop/org-vault.json.
+ * The file at `org-vault.json` only ever contains cipher-text for the token fields;
+ * profiles are stored in plaintext because they contain no secrets.
  *
  * File format (org-vault.json):
  * {
@@ -14,8 +14,9 @@
  * }
  */
 
-import { app, safeStorage } from "electron";
+import * as crypto from "crypto";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import type { OrgProfile, VaultRecord, SfSessionPayload } from "../../shared/types/org";
 
@@ -38,8 +39,29 @@ export function normalizeSfHost(urlOrHost: string): string {
   }
 }
 
+function getStorageDir(): string {
+  const dir = path.join(os.homedir(), ".sfir-desktop");
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+function getVaultKey(): Buffer {
+  const keyPath = path.join(getStorageDir(), ".vault-key");
+  if (fs.existsSync(keyPath)) {
+    try {
+      const key = fs.readFileSync(keyPath);
+      if (key.length === 32) return key;
+    } catch {}
+  }
+  const newKey = crypto.randomBytes(32);
+  fs.writeFileSync(keyPath, newKey, { mode: 0o600 });
+  return newKey;
+}
+
 function vaultPath(): string {
-  return path.join(app.getPath("userData"), "org-vault.json");
+  return path.join(getStorageDir(), "org-vault.json");
 }
 
 interface VaultFile {
@@ -67,23 +89,47 @@ function writeVault(vault: VaultFile): void {
 }
 
 function encrypt(plaintext: string): string {
-  if (!safeStorage.isEncryptionAvailable()) {
-    // Fallback: base64-encode so we never store raw tokens in plain text,
-    // but warn loudly in the logs.
-    console.warn(
-      "[session-vault] safeStorage encryption unavailable – falling back to base64."
-    );
-    return Buffer.from(plaintext).toString("base64");
+  if (!plaintext) return "";
+  try {
+    const key = getVaultKey();
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const encrypted = Buffer.concat([
+      cipher.update(plaintext, "utf8"),
+      cipher.final(),
+    ]);
+    const tag = cipher.getAuthTag();
+    return `${iv.toString("hex")}:${tag.toString("hex")}:${encrypted.toString("hex")}`;
+  } catch (err) {
+    console.warn("[session-vault] Encryption error, fallback to base64:", err);
+    return Buffer.from(plaintext, "utf8").toString("base64");
   }
-  return safeStorage.encryptString(plaintext).toString("base64");
 }
 
-function decrypt(cipherBase64: string): string {
-  if (!safeStorage.isEncryptionAvailable()) {
-    return Buffer.from(cipherBase64, "base64").toString("utf-8");
+function decrypt(cipherText: string): string {
+  if (!cipherText) return "";
+  try {
+    const parts = cipherText.split(":");
+    if (parts.length === 3) {
+      const [ivHex, tagHex, dataHex] = parts;
+      const key = getVaultKey();
+      const iv = Buffer.from(ivHex, "hex");
+      const tag = Buffer.from(tagHex, "hex");
+      const data = Buffer.from(dataHex, "hex");
+      const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+      decipher.setAuthTag(tag);
+      const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
+      return decrypted.toString("utf8");
+    }
+  } catch {
+    // Fallback: try base64 decode if it was stored with the legacy base64 fallback
   }
-  const buf = Buffer.from(cipherBase64, "base64");
-  return safeStorage.decryptString(buf);
+
+  try {
+    return Buffer.from(cipherText, "base64").toString("utf8");
+  } catch {
+    return cipherText;
+  }
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
