@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { useWorkspace, MainOrgTab } from "../state/workspace-store";
 import { toolDefinitions, ToolType } from "../services/tool-registry";
-import { PopupSearchBar } from "./PopupSearchBar";
+import { MainMenuTabsSection } from "./MainMenuTabsSection";
+import { parseInternalToolLink } from "../services/navigation-interceptor";
 
 interface DevTabDashboardProps {
   orgTab: MainOrgTab;
@@ -66,12 +67,21 @@ export function DevTabDashboard({ orgTab }: DevTabDashboardProps) {
     { label: "Object Manager", path: "/lightning/setup/ObjectManager/home", icon: "📦" },
     { label: "Flows", path: "/lightning/o/FlowRecord/list?filterName=All_FlowRecords", icon: "⚡" },
     { label: "Apex Classes", path: "/lightning/setup/ApexClasses/home", icon: "📄" },
-    { label: "Users", path: "/lightning/setup/ManageUsers/home", icon: "👤" },
     { label: "Custom Metadata", path: "/lightning/setup/CustomMetadata/home", icon: "🏷️" },
     { label: "Deployment Status", path: "/lightning/setup/DeployStatus/home", icon: "🚀" },
     { label: "Developer Console", path: "/_ui/common/apex/debug/ApexCSIPage", icon: "💻" },
     { label: "Company Info", path: "/lightning/setup/CompanyProfileInfo/home", icon: "🏢" },
   ];
+
+  const handleOpenToolTab = (toolPage: string) => {
+    const parsed = parseInternalToolLink(toolPage);
+    if (parsed) {
+      openSubTab(orgTab.orgId, parsed.toolType, parsed.params, parsed.title);
+    } else {
+      const type = toolPage.replace(/\.html$/, "") as ToolType;
+      openSubTab(orgTab.orgId, type);
+    }
+  };
 
   return (
     <div style={styles.dashboardContainer}>
@@ -120,15 +130,22 @@ export function DevTabDashboard({ orgTab }: DevTabDashboardProps) {
 
       {/* ── Main Scrollable Body ── */}
       <div style={styles.scrollableContent}>
-        {/* ── Smart Popup Search Bar (Primary Tool) ── */}
+        {/* ── Main Menu Section with 4 popup.js Tabs (Objects | Users | Org | Shortcuts) ── */}
         <div style={styles.searchSection}>
-          <div style={styles.searchSectionHeader}>
-            <h2 style={styles.sectionHeaderTitle}>Smart Popup & Record Resolver</h2>
-            <span style={styles.sectionHeaderSubtitle}>
-              Instantly resolve 15/18-char record IDs, search SObjects by 3-char prefix, query users, or launch tools
-            </span>
-          </div>
-          <PopupSearchBar orgId={orgTab.orgId} sfHost={orgTab.sfHost} autoFocus />
+          <MainMenuTabsSection
+            orgId={orgTab.orgId}
+            sfHost={orgTab.sfHost}
+            currentUserId={orgTab.username}
+            onInspectRecord={(sobject, recordId) =>
+              openSubTab(
+                orgTab.orgId,
+                "inspect",
+                { objectType: sobject, recordId },
+                `Inspect: ${sobject} (${recordId.slice(0, 10)})`
+              )
+            }
+            onOpenToolTab={handleOpenToolTab}
+          />
         </div>
 
         {/* ── Inspector Tools Grid ── */}

@@ -28,9 +28,81 @@ import {
   removeOrg,
   saveOrgSession,
 } from "../main/auth/session-vault";
+import {
+  openIsolatedBrowserSession,
+  type HostBrowserType,
+  type IsolationMode,
+} from "../main/auth/browser-launcher";
 import type { OrgProfile } from "../shared/types/org";
 
 export { openExternalInOs };
+
+async function buildLoginAsFrontdoorUrl(params: {
+  sfHost: string;
+  accessToken: string;
+  orgId: string;
+  targetUserId: string;
+  networkId?: string;
+  retUrl?: string;
+  targetUrl?: string;
+}): Promise<string> {
+  const {
+    sfHost,
+    accessToken,
+    orgId,
+    targetUserId,
+    networkId,
+    retUrl = "/lightning/page/home",
+    targetUrl = "/lightning/page/home",
+  } = params;
+
+  // 1. Construct the relative /servlet/servlet.su path
+  const servletSuPath = networkId
+    ? `/servlet/servlet.su?oid=${encodeURIComponent(
+        orgId
+      )}&retURL=${encodeURIComponent(retUrl)}&sunetworkid=${encodeURIComponent(
+        networkId
+      )}&sunetworkuserid=${encodeURIComponent(targetUserId)}`
+    : `/servlet/servlet.su?oid=${encodeURIComponent(
+        orgId
+      )}&suorgadminid=${encodeURIComponent(
+        targetUserId
+      )}&retURL=${encodeURIComponent(retUrl)}&targetURL=${encodeURIComponent(
+        targetUrl
+      )}`;
+
+  // 2. Attempt Salesforce Single Access UI Bridge first to prevent session hijacking flags
+  try {
+    const cleanRedirectUri = servletSuPath.replace(/^\//, "");
+    const singleAccessEndpoint = `https://${sfHost}/services/oauth2/singleaccess?redirect_uri=${encodeURIComponent(
+      cleanRedirectUri
+    )}`;
+    const response = await fetch(singleAccessEndpoint, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (response.ok) {
+      const payload = (await response.json()) as { frontdoor_uri?: string };
+      if (payload?.frontdoor_uri) {
+        return payload.frontdoor_uri;
+      }
+    }
+  } catch (err) {
+    console.warn(
+      "[auth:login-as-user] Single Access bridge unavailable, falling back to frontdoor.jsp:",
+      err
+    );
+  }
+
+  // 3. Fallback: Standard frontdoor.jsp wrapping the relative servlet.su path
+  return `https://${sfHost}/secur/frontdoor.jsp?sid=${encodeURIComponent(
+    accessToken
+  )}&retURL=${encodeURIComponent(servletSuPath)}`;
+}
 
 function readRequestBodyBuffer(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -499,6 +571,74 @@ export async function handleApiRequest(
               targetUrl.startsWith("mailto:"))
           ) {
             await openExternalInOs(targetUrl);
+          }
+          sendJson(res, 200, { success: true, result: null });
+          return true;
+        }
+
+        case "auth:login-as-user": {
+          const {
+            orgId,
+            targetUserId,
+            networkId,
+            retUrl,
+            targetUrl,
+            browserHint,
+            isolationMode = "incognito",
+          } = body as {
+            orgId: string;
+            targetUserId: string;
+            networkId?: string;
+            retUrl?: string;
+            targetUrl?: string;
+            browserHint?: HostBrowserType;
+            isolationMode?: IsolationMode;
+          };
+
+          const record = getVaultRecord(orgId);
+          if (!record) {
+            throw new Error(`Org not found in vault: ${orgId}`);
+          }
+          const accessToken = getDecryptedAccessToken(orgId);
+          if (!accessToken) {
+            throw new Error(`No access token found for org: ${orgId}`);
+          }
+
+          const sfHost = normalizeSfHost(record.sfHost);
+          const finalUrl = await buildLoginAsFrontdoorUrl({
+            sfHost,
+            accessToken,
+            orgId: record.orgId || orgId,
+            targetUserId,
+            networkId,
+            retUrl,
+            targetUrl,
+          });
+
+          await openIsolatedBrowserSession({
+            url: finalUrl,
+            browserHint,
+            userAgent: req.headers["user-agent"],
+            isolationMode,
+            profileTag: `${orgId}_${targetUserId}`,
+          });
+
+          sendJson(res, 200, { success: true, result: { url: finalUrl } });
+          return true;
+        }
+
+        case "shell:open-incognito": {
+          const targetUrl = typeof body === "string" ? body : body?.url;
+          if (
+            targetUrl &&
+            (targetUrl.startsWith("https://") || targetUrl.startsWith("http://"))
+          ) {
+            await openIsolatedBrowserSession({
+              url: targetUrl,
+              browserHint: body?.browserHint,
+              userAgent: req.headers["user-agent"],
+              isolationMode: body?.isolationMode || "incognito",
+            });
           }
           sendJson(res, 200, { success: true, result: null });
           return true;

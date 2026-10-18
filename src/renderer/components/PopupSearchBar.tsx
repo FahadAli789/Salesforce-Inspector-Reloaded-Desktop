@@ -448,6 +448,55 @@ export function PopupSearchBar({
                   </div>
 
                   <div style={styles.itemActions}>
+                    {u.IsActive && (
+                      <>
+                        <button
+                          type="button"
+                          style={{ ...styles.smallActionBtn, backgroundColor: "#2563eb", color: "#ffffff", borderColor: "#2563eb" }}
+                          onClick={() => {
+                            const loginAsPath = `/servlet/servlet.su?oid=${encodeURIComponent(orgId)}&suorgadminid=${encodeURIComponent(u.Id)}&retURL=/lightning/page/home&targetURL=/lightning/page/home`;
+                            handleOpenBrowser(loginAsPath);
+                          }}
+                          title="Login As User (Default session)"
+                        >
+                          🔑 LoginAs
+                        </button>
+                        <button
+                          type="button"
+                          style={{ ...styles.smallActionBtn, backgroundColor: "#0f172a", color: "#ffffff", borderColor: "#0f172a" }}
+                          onClick={async () => {
+                            const electronApi = (window as any).electronApi || (window as any).electronAPI;
+                            if (electronApi?.loginAsUser) {
+                              await electronApi.loginAsUser({
+                                orgId,
+                                targetUserId: u.Id,
+                                isolationMode: "incognito",
+                              });
+                            }
+                          }}
+                          title="Login As in Incognito / InPrivate"
+                        >
+                          🕵️ Incognito
+                        </button>
+                        <button
+                          type="button"
+                          style={styles.smallActionBtn}
+                          onClick={async () => {
+                            const electronApi = (window as any).electronApi || (window as any).electronAPI;
+                            if (electronApi?.loginAsUser) {
+                              await electronApi.loginAsUser({
+                                orgId,
+                                targetUserId: u.Id,
+                                isolationMode: "isolated-profile",
+                              });
+                            }
+                          }}
+                          title="Login As in New Isolated Profile"
+                        >
+                          🗂️ Profile
+                        </button>
+                      </>
+                    )}
                     <button
                       type="button"
                       style={styles.smallActionBtn}

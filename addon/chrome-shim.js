@@ -151,6 +151,15 @@
         (msg.message === "getSfHost" || msg.msg === "getSfHost")
       ) {
         result = currentSfHost;
+      } else if (msg && msg.message === "createWindow" && msg.url) {
+        if (msg.incognito && electronApi && typeof electronApi.openIncognito === "function") {
+          await electronApi.openIncognito(msg.url, "incognito");
+        } else if (electronApi && typeof electronApi.openExternal === "function") {
+          await electronApi.openExternal(msg.url);
+        } else {
+          window.open(msg.url, "_blank", "noopener,noreferrer");
+        }
+        result = { created: true };
       } else {
         result = undefined;
       }

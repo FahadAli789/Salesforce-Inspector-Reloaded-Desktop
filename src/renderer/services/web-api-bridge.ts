@@ -34,6 +34,32 @@ export interface GetSessionPayload {
   sfHost?: string;
 }
 
+export type HostBrowserType = "chrome" | "edge" | "default";
+export type IsolationMode = "incognito" | "isolated-profile";
+
+export interface LoginAsUserPayload {
+  orgId: string;
+  targetUserId: string;
+  networkId?: string;
+  retUrl?: string;
+  targetUrl?: string;
+  isolationMode?: IsolationMode;
+}
+
+export function detectClientBrowser(): HostBrowserType {
+  if (typeof navigator === "undefined") return "default";
+  const uaData = (navigator as any).userAgentData;
+  if (uaData?.brands && Array.isArray(uaData.brands)) {
+    const brands = uaData.brands.map((b: any) => (b.brand || "").toLowerCase());
+    if (brands.some((b: string) => b.includes("edge"))) return "edge";
+    if (brands.some((b: string) => b.includes("google chrome"))) return "chrome";
+  }
+  const ua = navigator.userAgent || "";
+  if (/\bEdg\//i.test(ua)) return "edge";
+  if (/\bChrome\//i.test(ua)) return "chrome";
+  return "default";
+}
+
 export interface ElectronApiBridge {
   loginWithOAuth: (payload: LoginOAuthPayload) => Promise<OrgProfile>;
   loginWithManualSession: (payload: LoginManualPayload) => Promise<OrgProfile>;
@@ -45,6 +71,13 @@ export interface ElectronApiBridge {
   removeOrg: (payload: { orgId: string }) => Promise<boolean>;
   openExternal: (url: string) => Promise<void>;
   openOrgFrontdoor: (orgId: string, retUrl?: string) => Promise<void>;
+  openIncognito: (
+    url: string,
+    isolationMode?: IsolationMode
+  ) => Promise<void>;
+  loginAsUser: (
+    payload: LoginAsUserPayload
+  ) => Promise<{ url: string }>;
   importSfdxOrgs: () => Promise<OrgProfile[]>;
   sfRestRequest: (args: {
     sfHost: string;
@@ -118,6 +151,22 @@ export const webApiBridge: ElectronApiBridge = {
 
   openOrgFrontdoor: (orgId: string, retUrl?: string): Promise<void> =>
     invokeIpc<void>("auth:open-org-frontdoor", { orgId, retUrl }),
+
+  openIncognito: (
+    url: string,
+    isolationMode: IsolationMode = "incognito"
+  ): Promise<void> =>
+    invokeIpc<void>("shell:open-incognito", {
+      url,
+      browserHint: detectClientBrowser(),
+      isolationMode,
+    }),
+
+  loginAsUser: (payload: LoginAsUserPayload): Promise<{ url: string }> =>
+    invokeIpc<{ url: string }>("auth:login-as-user", {
+      ...payload,
+      browserHint: detectClientBrowser(),
+    }),
 
   importSfdxOrgs: (): Promise<OrgProfile[]> =>
     invokeIpc<OrgProfile[]>("auth:import-sfdx-orgs"),
